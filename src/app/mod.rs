@@ -5,6 +5,7 @@ mod live;
 mod setup;
 mod stage;
 mod studio;
+pub mod themes;
 pub mod theme;
 
 use crate::library::{self, Item, Kind};
@@ -147,6 +148,13 @@ pub struct App {
     /// (only this window) as raw RGBA next to `file`, and closes
     shot: Option<(PathBuf, u32)>,
     pub shot_scroll: Option<f32>,
+    /// the theme now applied (the palette changes when the setting does)
+    applied_theme: String,
+    /// developer check PMVGEN_SHOT_LONG: the whole page, scrolled through and captured piece by piece
+    pub shot_long: bool,
+    /// the setup page's scroll: (content height, viewport height, viewport top on screen) in points
+    pub shot_page: Option<(f32, f32, f32)>,
+    shot_next: u32,
 }
 
 const TERMS_VERSION: &str = "1";
@@ -327,6 +335,10 @@ impl App {
             shot_scroll: std::env::var("PMVGEN_SHOT_SCROLL")
                 .ok()
                 .and_then(|v| v.parse().ok()),
+            applied_theme: String::new(),
+            shot_long: std::env::var_os("PMVGEN_SHOT_LONG").is_some(),
+            shot_page: None,
+            shot_next: 0,
         }
     }
 
@@ -793,7 +805,17 @@ impl App {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(60);
-        if *n == wait {
+        let long = self.shot_long;
+        if long {
+            // scroll, wait for the picture to settle, capture; until the end of the page
+            if *n == wait {
+                self.shot_scroll = Some(0.0);
+                self.shot_next = *n + 25;
+            }
+            if *n == self.shot_next {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            }
+        } else if *n == wait {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
         let shot = ctx.input(|i| {
@@ -808,12 +830,34 @@ impl App {
             for p in &img.pixels {
                 bytes.extend_from_slice(&p.to_array());
             }
+            if long {
+                let off = self.shot_scroll.unwrap_or(0.0);
+                let (content, view, top) = self.shot_page.unwrap_or((0.0, 1.0, 0.0));
+                let ppp = ctx.pixels_per_point();
+                let out = path.with_extension(format!(
+                    "part{:06}.{w}x{h}.{}.{}.{}.{}.rgba",
+                    (off * ppp) as u32,
+                    (top * ppp) as u32,
+                    (view * ppp) as u32,
+                    (content * ppp) as u32,
+                    (off * ppp) as u32
+                ));
+                let _ = std::fs::write(&out, bytes);
+                eprintln!("[pmvgen] part {}", out.display());
+                if off + view >= content - 1.0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    self.shot_scroll = Some((off + view * 0.85).min(content - view));
+                    self.shot_next = *n + 25;
+                }
+                return;
+            }
             let out = path.with_extension(format!("{w}x{h}.rgba"));
             let _ = std::fs::write(&out, bytes);
             eprintln!("[pmvgen] screenshot {}", out.display());
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if *n > wait + 600 {
+        if !long && *n > wait + 600 || *n > wait + 6000 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -834,8 +878,8 @@ impl App {
             .show(ctx, |ui| {
                 for (i, t) in self.toasts.iter().enumerate() {
                     let r = egui::Frame::new()
-                        .fill(if glass() { alpha(BG2, 0.92) } else { BG2 })
-                        .stroke(egui::Stroke::new(1.0_f32, if t.ok { BG3 } else { DANGER }))
+                        .fill(if glass() { alpha(c().bg2, 0.92) } else { c().bg2 })
+                        .stroke(egui::Stroke::new(1.0_f32, if t.ok { c().bg3 } else { c().danger }))
                         .corner_radius(if glass() { 255 } else { 6 })
                         .inner_margin(egui::Margin::symmetric(16, 10))
                         .shadow(egui::Shadow {
@@ -853,10 +897,10 @@ impl App {
                                     ui.painter(),
                                     r,
                                     if t.ok { Icon::Check } else { Icon::Info },
-                                    if t.ok { OK } else { DANGER },
+                                    if t.ok { c().ok } else { c().danger },
                                 );
                                 ui.add(
-                                    egui::Label::new(egui::RichText::new(&t.msg).color(TEXT))
+                                    egui::Label::new(egui::RichText::new(&t.msg).color(c().text))
                                         .wrap(),
                                 );
                             });
@@ -882,7 +926,7 @@ impl App {
             .show(ctx, |ui| {
                 let r = ctx.screen_rect();
                 ui.painter()
-                    .rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(20, 8, 18, 235));
+                    .rect_filled(r, 0.0, themes::rgba(20, 8, 18, 235));
                 ui.allocate_rect(r, egui::Sense::click());
             });
         egui::Area::new(egui::Id::new("gate"))
@@ -890,8 +934,8 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 let resp = egui::Frame::new()
-                    .fill(BG2)
-                    .stroke(egui::Stroke::new(1.0_f32, BG3))
+                    .fill(c().bg2)
+                    .stroke(egui::Stroke::new(1.0_f32, c().bg3))
                     .corner_radius(8)
                     .inner_margin(egui::Margin {
                         left: 28,
@@ -907,7 +951,7 @@ impl App {
                     })
                     .show(ui, |ui| {
                         ui.set_width(ctx.screen_rect().width().min(640.0) - 56.0);
-                        ui.label(egui::RichText::new("Before you start").font(display(30.0)).color(TEXT));
+                        ui.label(egui::RichText::new("Before you start").font(display(30.0)).color(c().text));
                         ui.add_space(4.0);
                         let body = |ui: &mut egui::Ui, parts: &[(&str, bool)]| {
                             let mut job = egui::text::LayoutJob::default();
@@ -917,7 +961,7 @@ impl App {
                                     0.0,
                                     egui::TextFormat {
                                         font_id: if *b { bold(14.5) } else { text(14.5) },
-                                        color: if *b { TEXT } else { TEXT2 },
+                                        color: if *b { c().text } else { c().text2 },
                                         ..Default::default()
                                     },
                                 );
@@ -942,12 +986,12 @@ impl App {
                         ];
                         for (i, (b, t)) in items.iter().enumerate() {
                             ui.horizontal_top(|ui| {
-                                ui.label(egui::RichText::new(format!("{}.", i + 1)).font(bold(14.5)).color(PINK));
+                                ui.label(egui::RichText::new(format!("{}.", i + 1)).font(bold(14.5)).color(c().accent));
                                 ui.vertical(|ui| body(ui, &[(b, true), (t, false)]));
                             });
                         }
                         egui::Frame::new()
-                            .fill(BASE)
+                            .fill(c().base)
                             .corner_radius(6)
                             .inner_margin(egui::Margin::symmetric(14, 12))
                             .show(ui, |ui| {
@@ -960,7 +1004,7 @@ impl App {
                                 ] {
                                     job.append(t, 0.0, egui::TextFormat {
                                         font_id: if b { bold(13.0) } else { text(13.0) },
-                                        color: if b { TEXT } else { TEXT2 },
+                                        color: if b { c().text } else { c().text2 },
                                         ..Default::default()
                                     });
                                 }
@@ -992,6 +1036,11 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.applied_theme != self.s.theme {
+            self.applied_theme = self.s.theme.clone();
+            let pal = themes::by_id(&self.s.theme);
+            apply_palette(ctx, &pal);
+        }
         self.scale(ctx);
         set_glass(self.s.glass);
         self.poll_jobs(ctx);
@@ -1089,6 +1138,7 @@ pub fn run(open: Vec<PathBuf>) -> anyhow::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("PMV Generator")
+            .with_maximized(std::env::var_os("PMVGEN_SHOT_MAX").is_some())
             .with_inner_size(
                 std::env::var("PMVGEN_SHOT_SIZE")
                     .ok()

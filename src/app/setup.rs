@@ -263,7 +263,7 @@ pub fn page(ctx: &egui::Context, app: &mut App) {
             if let Some(y) = app.shot_scroll {
                 sa = sa.vertical_scroll_offset(y);
             }
-            sa.show(ui, |ui| {
+            let o = sa.show(ui, |ui| {
                 let full = ui.available_width();
                 let pad = (full * 0.03).clamp(16.0, 40.0);
                 let content = (full - 2.0 * pad).min(1500.0);
@@ -291,6 +291,7 @@ pub fn page(ctx: &egui::Context, app: &mut App) {
                     });
                 });
             });
+            app.shot_page = Some((o.content_size.y, o.inner_rect.height(), o.inner_rect.top()));
         });
     // the Go card: beside the cards, sticky at 16 px from the top while scrolling
     if wide {
@@ -303,7 +304,10 @@ pub fn page(ctx: &egui::Context, app: &mut App) {
         let y = row_top
             .unwrap_or(inner.top() + 120.0)
             .max(inner.top() + 16.0);
+        // (a whole-page developer screenshot: the card scrolls with the page instead of sticking)
+        let y = if app.shot_long { row_top.unwrap_or(y) } else { y };
         egui::Area::new(egui::Id::new("go-card"))
+            .constrain(!app.shot_long)
             .fixed_pos(Pos2::new(x, y))
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
@@ -322,29 +326,29 @@ fn top_bar(ui: &mut Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
         let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
-        icon(ui.painter(), r, Icon::Heart, PINK);
+        icon(ui.painter(), r, Icon::Heart, c().accent);
         ui.label(
             egui::RichText::new("PMV Generator")
                 .font(display(18.0))
-                .color(TEXT),
+                .color(c().text),
         );
         // "Runs locally – no uploads"
         let g =
             ui.painter()
-                .layout_no_wrap("Runs locally – no uploads".into(), medium(12.5), TEXT2);
+                .layout_no_wrap("Runs locally – no uploads".into(), medium(12.5), c().text2);
         let (r, resp) = ui.allocate_exact_size(Vec2::new(g.size().x + 40.0, 26.0), Sense::hover());
         let p = ui.painter();
-        p.rect_stroke(r, 255, Stroke::new(1.0_f32, BG3), egui::StrokeKind::Inside);
+        p.rect_stroke(r, 255, Stroke::new(1.0_f32, c().bg3), egui::StrokeKind::Inside);
         icon(
             p,
             Rect::from_center_size(Pos2::new(r.left() + 17.0, r.center().y), Vec2::splat(14.0)),
             Icon::Check,
-            OK,
+            c().ok,
         );
         p.galley(
             Pos2::new(r.left() + 30.0, r.center().y - g.size().y / 2.0),
             g,
-            TEXT2,
+            c().text2,
         );
         resp.on_hover_text(
             "Songs and clips are opened straight from your disk. Nothing is sent anywhere.",
@@ -352,7 +356,7 @@ fn top_bar(ui: &mut Ui, app: &mut App) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let link = |ui: &mut Ui, t: &str| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(t).font(medium(13.0)).color(FAINT))
+                    egui::Label::new(egui::RichText::new(t).font(medium(13.0)).color(c().faint))
                         .sense(Sense::click()),
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -377,28 +381,35 @@ fn top_bar(ui: &mut Ui, app: &mut App) {
 fn header(ui: &mut Ui, app: &mut App) {
     ui.add_space(14.0);
     let w = ui.available_width();
-    let size = (w * 0.048).clamp(36.0, 62.0);
+    // (clamp(36px, 4.8vw, 62px) – of the window's width)
+    let size = (ui.ctx().screen_rect().width() * 0.048).clamp(36.0, 62.0);
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width((w - 150.0).max(200.0));
-            ui.label(egui::RichText::new("PMV Generator").font(display(size)).color(TEXT));
+            ui.label(egui::RichText::new("PMV Generator").font(display(size)).color(c().text));
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(
                         "Pick a song and a folder of clips – on every beat it cuts to the next one. Live, generated and edited, or exported as a video. Everything runs on your computer: your files are never uploaded.",
                     )
                     .font(text(16.0))
-                    .color(TEXT2),
+                    .color(c().text2),
                 )
                 .wrap(),
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Liquid glass").font(medium(13.0)).color(TEXT2));
+            ui.label(egui::RichText::new("Liquid glass").font(medium(13.5)).color(c().text2));
             if switch(ui, &mut app.s.glass).changed() {
                 set_glass(app.s.glass);
             }
+            ui.add_space(14.0);
+            let opts: Vec<(String, String)> = super::themes::THEMES
+                .iter()
+                .map(|(k, n)| (k.to_string(), n.to_string()))
+                .collect();
+            select(ui, "theme", &mut app.s.theme, &opts, 170.0);
         });
     });
 }
@@ -409,7 +420,7 @@ fn draw_wave(ui: &mut Ui, song: &Song) {
     let w = ui.available_width();
     let (r, _) = ui.allocate_exact_size(Vec2::new(w, 70.0), Sense::hover());
     let p = ui.painter_at(r);
-    p.rect_filled(r, if glass() { 10.0 } else { 4.0 }, alpha(BASE, 0.8));
+    p.rect_filled(r, if glass() { 10.0 } else { 4.0 }, alpha(c().base, 0.8));
     let peaks = &song.a.peaks;
     let n = peaks.len().max(1);
     let max = peaks.iter().cloned().fold(0.0001f32, f32::max);
@@ -435,11 +446,11 @@ fn draw_wave(ui: &mut Ui, song: &Song) {
             None => (k % 4 == 0, k % 16 == 0),
         };
         let (c, hh) = if phrase {
-            (PINK, 1.0)
+            (c().accent, 1.0)
         } else if bar {
-            (alpha(PINK, 0.6), 0.6)
+            (alpha(c().accent, 0.6), 0.6)
         } else {
-            (Color32::from_white_alpha(40), 0.3)
+            (white(40), 0.3)
         };
         p.line_segment(
             [
@@ -543,7 +554,7 @@ fn song_pane(ui: &mut Ui, app: &mut App) {
                 ui.label(
                     egui::RichText::new(&song.name)
                         .font(display(22.0))
-                        .color(TEXT),
+                        .color(c().text),
                 );
                 ui.label(
                     egui::RichText::new(format!(
@@ -558,7 +569,7 @@ fn song_pane(ui: &mut Ui, app: &mut App) {
                         }
                     ))
                     .font(medium(14.0))
-                    .color(PINK2),
+                    .color(c().accent2),
                 );
             });
             draw_wave(ui, &song);
@@ -587,7 +598,7 @@ fn song_pane(ui: &mut Ui, app: &mut App) {
                 {
                     app.sel = i;
                 }
-                ui.label(egui::RichText::new(st).font(text(12.5)).color(FAINT));
+                ui.label(egui::RichText::new(st).font(text(12.5)).color(c().faint));
                 if x_btn(ui, "Remove").clicked() {
                     remove = Some(i);
                 }
@@ -652,7 +663,7 @@ fn song_pane(ui: &mut Ui, app: &mut App) {
             ui.label(
                 egui::RichText::new("Only use")
                     .font(medium(14.0))
-                    .color(TEXT2),
+                    .color(c().text2),
             );
             let e = &mut app.songs[app.sel];
             field(ui, &mut e.from, "0:00", 80.0);
@@ -702,7 +713,7 @@ fn template_timeline(ui: &mut Ui, tpl: &crate::template::Template, dur: f64) {
     let w = ui.available_width();
     let (r, _) = ui.allocate_exact_size(Vec2::new(w, 84.0), Sense::hover());
     let p = ui.painter_at(r);
-    p.rect_filled(r, if glass() { 10.0 } else { 4.0 }, alpha(BASE, 0.8));
+    p.rect_filled(r, if glass() { 10.0 } else { 4.0 }, alpha(c().base, 0.8));
     let d = dur.max(0.01);
     let x = |t: f64| r.left() + r.width() * (t / d) as f32;
     for sg in &tpl.segs {
@@ -713,7 +724,7 @@ fn template_timeline(ui: &mut Ui, tpl: &crate::template::Template, dur: f64) {
                 Pos2::new((x(sg.end) - 1.0).max(x(sg.t) + 1.0), r.bottom() - 16.0),
             ),
             0.0,
-            Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 217),
+            super::themes::rgba(c[0], c[1], c[2], 217),
         );
     }
     for ev in &tpl.events {
@@ -733,14 +744,14 @@ fn template_timeline(ui: &mut Ui, tpl: &crate::template::Template, dur: f64) {
                 p.rect_filled(
                     Rect::from_min_size(Pos2::new(xx, r.top()), Vec2::new(2.0, 15.0)),
                     0.0,
-                    TEXT,
+                    c().text,
                 );
             }
             crate::template::TplEvent::Cut { .. } => {
                 p.rect_filled(
                     Rect::from_min_size(Pos2::new(xx, r.top()), Vec2::new(1.0, 10.0)),
                     0.0,
-                    alpha(TEXT, 0.55),
+                    alpha(c().text, 0.55),
                 );
             }
         }
@@ -755,9 +766,9 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
             ui.label(
                 egui::RichText::new(&app.tpl.name)
                     .font(bold(15.0))
-                    .color(TEXT),
+                    .color(c().text),
             );
-            ui.label(egui::RichText::new(m).color(TEXT2));
+            ui.label(egui::RichText::new(m).color(c().text2));
         });
         progress_bar(ui, f);
         if btn(ui, Btn::Ghost, None, "Cancel", true).clicked() {
@@ -770,7 +781,7 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
             ui.label(
                 egui::RichText::new(&tpl.name)
                     .font(display(22.0))
-                    .color(TEXT),
+                    .color(c().text),
             );
             let st = &tpl.stats;
             ui.label(
@@ -783,7 +794,7 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
                     st.flashes
                 ))
                 .font(medium(14.0))
-                .color(PINK2),
+                .color(c().accent2),
             );
         });
         template_timeline(ui, &tpl, song.duration());
@@ -793,14 +804,14 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
             v.sort_by(|a, b| b.1.total_cmp(a.1));
             for (k, sec) in v {
                 let name = crate::plan::layout(k).name;
-                let c = layout_color(k);
+                let lc = layout_color(k);
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                 ui.painter()
-                    .rect_filled(r, 2.0, Color32::from_rgb(c[0], c[1], c[2]));
+                    .rect_filled(r, 2.0, Color32::from_rgb(lc[0], lc[1], lc[2]));
                 ui.label(
                     egui::RichText::new(format!("{name} {} %", (sec / total * 100.0).round()))
                         .font(medium(13.0))
-                        .color(TEXT2),
+                        .color(c().text2),
                 );
                 ui.add_space(6.0);
             }
@@ -854,22 +865,22 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
             r,
             if glass() { 12.0 } else { 5.0 },
             if resp.hovered() {
-                BG3
+                c().bg3
             } else {
-                alpha(BASE, 0.6)
+                alpha(c().base, 0.6)
             },
         );
         let ic = Rect::from_min_size(r.min + Vec2::new(6.0, 6.0), Vec2::new(64.0, 36.0));
-        p.rect_filled(ic, 3.0, BG2);
+        p.rect_filled(ic, 3.0, c().bg2);
         icon(
             p,
             Rect::from_center_size(ic.center(), Vec2::splat(18.0)),
             Icon::Film,
-            PINK,
+            c().accent,
         );
         let tw = w - 84.0;
-        let g = p.layout(name.clone(), bold(13.5), TEXT, tw);
-        p.galley(Pos2::new(ic.right() + 8.0, r.top() + 7.0), g, TEXT);
+        let g = p.layout(name.clone(), bold(13.5), c().text, tw);
+        p.galley(Pos2::new(ic.right() + 8.0, r.top() + 7.0), g, c().text);
         p.text(
             Pos2::new(ic.right() + 8.0, r.bottom() - 7.0),
             Align2::LEFT_BOTTOM,
@@ -879,7 +890,7 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
                 it.root.to_string_lossy().to_string()
             },
             text(12.0),
-            FAINT,
+            c().faint,
         );
         if resp.on_hover_text(it.path.to_string_lossy()).clicked() {
             pick = Some((it.path.clone(), name));
@@ -921,13 +932,13 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
                 app.add_folder_dialog();
             }
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("or").font(text(13.0)).color(FAINT));
+                ui.label(egui::RichText::new("or").font(text(13.0)).color(c().faint));
                 if ui
                     .add(
                         egui::Label::new(
                             egui::RichText::new("pick single files")
                                 .font(text(13.0))
-                                .color(PINK)
+                                .color(c().accent)
                                 .underline(),
                         )
                         .sense(Sense::click()),
@@ -941,17 +952,17 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
         } else {
             // the library bar (.kb-pmvg-libbar)
             egui::Frame::new()
-                .fill(if glass() { alpha(BG2, 0.5) } else { BASE })
+                .fill(if glass() { alpha(c().bg2, 0.5) } else { c().base })
                 .stroke(Stroke::new(
                     1.0_f32,
-                    if glass() { glass_edge() } else { BG3 },
+                    if glass() { glass_edge() } else { c().bg3 },
                 ))
                 .corner_radius(if glass() { 14 } else { 6 })
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-                        icon(ui.painter(), r, Icon::Folder, PINK);
+                        icon(ui.painter(), r, Icon::Folder, c().accent);
                         let pl = |n: usize, one: &str, many: &str| {
                             format!("{n} {}", if n == 1 { one } else { many })
                         };
@@ -969,7 +980,7 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
                         if bad > 0 {
                             t.push_str(&format!(" · {bad} unreadable"));
                         }
-                        ui.label(egui::RichText::new(t).font(medium(14.0)).color(TEXT));
+                        ui.label(egui::RichText::new(t).font(medium(14.0)).color(c().text));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if btn(ui, Btn::Ghost, None, "Remove all", true).clicked() {
                                 let mut l = app.lib.lk();
@@ -1055,9 +1066,9 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
                                 .map(|x| x.to_string_lossy().to_string())
                                 .unwrap_or(s.clone());
                             ui.label(egui::RichText::new(n).font(medium(13.5)).color(if on {
-                                TEXT
+                                c().text
                             } else {
-                                FAINT
+                                c().faint
                             }))
                             .on_hover_text(&s);
                             if x_btn(ui, "Remove this folder").clicked() {
@@ -1152,12 +1163,12 @@ fn per_video(ui: &mut Ui, app: &mut App) {
         .horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
             if app.ui.per_video_open {
-                icon(ui.painter(), r, Icon::Chevron, PINK2);
+                icon(ui.painter(), r, Icon::Chevron, c().accent2);
             } else {
-                icon(ui.painter(), r.shrink(2.0), Icon::Play, PINK2);
+                icon(ui.painter(), r.shrink(2.0), Icon::Play, c().accent2);
             }
             ui.add(
-                egui::Label::new(egui::RichText::new(&title).font(medium(13.5)).color(PINK2))
+                egui::Label::new(egui::RichText::new(&title).font(medium(13.5)).color(c().accent2))
                     .sense(Sense::click()),
             )
         })
@@ -1204,28 +1215,28 @@ fn per_video(ui: &mut Ui, app: &mut App) {
                 .spacing([10.0, 6.0])
                 .striped(true)
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Video").font(medium(12.5)).color(FAINT));
+                    ui.label(egui::RichText::new("Video").font(medium(12.5)).color(c().faint));
                     ui.label(
                         egui::RichText::new("Length")
                             .font(medium(12.5))
-                            .color(FAINT),
+                            .color(c().faint),
                     );
                     ui.label(
                         egui::RichText::new("Skip start")
                             .font(medium(12.5))
-                            .color(FAINT),
+                            .color(c().faint),
                     );
                     ui.label(
                         egui::RichText::new("Skip end")
                             .font(medium(12.5))
-                            .color(FAINT),
+                            .color(c().faint),
                     );
                     ui.end_row();
                     for (path, name, dur, skip) in &list {
                         ui.label(
                             egui::RichText::new(name)
                                 .font(text(13.5))
-                                .color(if skip.is_empty() { TEXT2 } else { TEXT }),
+                                .color(if skip.is_empty() { c().text2 } else { c().text }),
                         )
                         .on_hover_text(path.to_string_lossy());
                         ui.label(
@@ -1235,7 +1246,7 @@ fn per_video(ui: &mut Ui, app: &mut App) {
                                 "…".into()
                             })
                             .font(text(13.0))
-                            .color(FAINT),
+                            .color(c().faint),
                         );
                         let mut s2 = *skip;
                         let maxv = if *dur > 0.0 {
@@ -1288,7 +1299,7 @@ fn per_video(ui: &mut Ui, app: &mut App) {
                                     ui.label(
                                         egui::RichText::new("as above")
                                             .font(text(12.5))
-                                            .color(FAINT),
+                                            .color(c().faint),
                                     );
                                 }
                             });
@@ -1478,14 +1489,14 @@ fn sec_cut(ui: &mut Ui, app: &mut App) {
     for l in LAYOUTS.iter() {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::new(24.0, 15.0), Sense::hover());
-            layout_icon(ui.painter(), r, l.id, TEXT2);
+            layout_icon(ui.painter(), r, l.id, c().text2);
             let (r, _) = ui.allocate_exact_size(Vec2::new(150.0, 20.0), Sense::hover());
             ui.painter().text(
                 r.left_center(),
                 Align2::LEFT_CENTER,
                 l.name,
                 medium(14.0),
-                TEXT,
+                c().text,
             );
             let mut v = s
                 .layout_shape
@@ -1708,8 +1719,8 @@ fn sec_pics(ui: &mut Ui, s: &mut Settings) {
 fn look_seg(ui: &mut Ui, s: &mut Settings) {
     let g = glass();
     egui::Frame::new()
-        .fill(if g { alpha(BG3, 0.38) } else { BASE })
-        .stroke(Stroke::new(1.0_f32, if g { glass_edge() } else { BG3 }))
+        .fill(if g { alpha(c().bg3, 0.38) } else { c().base })
+        .stroke(Stroke::new(1.0_f32, if g { glass_edge() } else { c().bg3 }))
         .corner_radius(if g { 255 } else { 4 })
         .inner_margin(egui::Margin::same(2))
         .show(ui, |ui| {
@@ -1720,28 +1731,28 @@ fn look_seg(ui: &mut Ui, s: &mut Settings) {
                     let gal = ui.painter().layout_no_wrap(
                         l.into(),
                         medium(13.0),
-                        if on { INK } else { TEXT2 },
+                        if on { c().on_accent } else { c().text2 },
                     );
                     let (r, resp) = ui
                         .allocate_exact_size(Vec2::new(gal.size().x + 40.0, 30.0), Sense::click());
                     let p = ui.painter();
                     if on {
-                        p.rect_filled(r, if g { 255 } else { 2 }, PINK);
+                        p.rect_filled(r, if g { 255 } else { 2 }, c().accent);
                     } else if resp.hovered() {
-                        p.rect_filled(r, if g { 255 } else { 2 }, BG2);
+                        p.rect_filled(r, if g { 255 } else { 2 }, c().bg2);
                     }
                     let dot = Pos2::new(r.left() + 16.0, r.center().y);
-                    let c = match v {
+                    let dot_c = match v {
                         "warm" => Color32::from_rgb(0xf0, 0xa0, 0x60),
-                        "pink" => PINK,
+                        "pink" => c().accent,
                         "cold" => Color32::from_rgb(0x5a, 0xa0, 0xff),
                         "vivid" => Color32::from_rgb(0xff, 0xd1, 0x66),
                         "bw" => Color32::from_gray(200),
                         "noir" => Color32::from_gray(80),
-                        "custom" => VIOLET,
+                        "custom" => c().second,
                         _ => Color32::from_rgb(0xb0, 0xa0, 0xa6),
                     };
-                    p.circle_filled(dot, 5.0, c);
+                    p.circle_filled(dot, 5.0, dot_c);
                     if v == "bw" {
                         p.add(egui::Shape::convex_polygon(
                             vec![
@@ -1756,12 +1767,12 @@ fn look_seg(ui: &mut Ui, s: &mut Settings) {
                     p.circle_stroke(
                         dot,
                         5.0,
-                        Stroke::new(1.0_f32, Color32::from_white_alpha(90)),
+                        Stroke::new(1.0_f32, white(90)),
                     );
                     p.galley(
                         Pos2::new(r.left() + 28.0, r.center().y - gal.size().y / 2.0),
                         gal,
-                        if on { INK } else { TEXT2 },
+                        if on { c().on_accent } else { c().text2 },
                     );
                     if resp.clicked() {
                         s.look = v.to_string();
@@ -2125,7 +2136,7 @@ fn sec_out(ui: &mut Ui, app: &mut App) {
     // font of the title cards and words
     let mut font_msg: Option<(String, bool)> = None;
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Font").font(medium(13.5)).color(TEXT2));
+        ui.label(egui::RichText::new("Font").font(medium(13.5)).color(c().text2));
         let name = if s.font.trim().is_empty() {
             "Anton (built-in)".to_string()
         } else {
@@ -2134,7 +2145,7 @@ fn sec_out(ui: &mut Ui, app: &mut App) {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default()
         };
-        ui.label(egui::RichText::new(name).font(bold(14.0)).color(TEXT))
+        ui.label(egui::RichText::new(name).font(bold(14.0)).color(c().text))
             .on_hover_text("Used for the intro, the outro and the words of “Text”");
         if btn(ui, Btn::Normal, None, "Choose font …", true).clicked() {
             if let Some(f) = rfd::FileDialog::new()
@@ -2420,7 +2431,7 @@ fn go_card(ui: &mut Ui, app: &mut App, compact: bool) {
         }
         if let Some(job) = &app.gen {
             let (f, m) = job.progress();
-            ui.label(egui::RichText::new(m).font(medium(13.5)).color(TEXT2));
+            ui.label(egui::RichText::new(m).font(medium(13.5)).color(c().text2));
             progress_bar(ui, f);
             if btn(ui, Btn::Ghost, None, "Cancel", true).clicked() {
                 job.cancel.store(true, Ordering::SeqCst);
@@ -2440,7 +2451,7 @@ fn go_card(ui: &mut Ui, app: &mut App, compact: bool) {
                     m
                 })
                 .font(medium(13.5))
-                .color(TEXT2),
+                .color(c().text2),
             );
             progress_bar(ui, f);
         }

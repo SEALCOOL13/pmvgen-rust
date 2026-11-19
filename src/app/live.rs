@@ -169,7 +169,7 @@ impl Live {
                         Align2::CENTER_CENTER,
                         "Getting the first clips ready …",
                         display(26.0),
-                        TEXT,
+                        c().text,
                     );
                 }
                 if self.info {
@@ -225,7 +225,7 @@ impl Live {
                     panel_frame().show(ui, |ui| {
                         ui.set_width(380.0);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Change the moments").font(display(22.0)).color(TEXT));
+                            ui.label(egui::RichText::new("Change the moments").font(display(22.0)).color(c().text));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if btn(ui, Btn::Ghost, Some(Icon::Close), "", true).clicked() {
                                     close = true;
@@ -268,7 +268,7 @@ impl Live {
         let text_s = lines.join("\n");
         let galley = ui
             .painter()
-            .layout(text_s, text(13.5), TEXT, avail.width() * 0.6);
+            .layout(text_s, text(13.5), c().text, avail.width() * 0.6);
         let r = Rect::from_min_size(
             avail.min + Vec2::new(16.0, 16.0),
             galley.size() + Vec2::new(24.0, 20.0),
@@ -276,7 +276,7 @@ impl Live {
         ui.painter()
             .rect_filled(r, 10.0, Color32::from_black_alpha(190));
         ui.painter()
-            .galley(r.min + Vec2::new(12.0, 10.0), galley, TEXT);
+            .galley(r.min + Vec2::new(12.0, 10.0), galley, c().text);
     }
 
     /// The end card: play again, edit, back. → the button pressed
@@ -289,7 +289,7 @@ impl Live {
                 ui.label(
                     egui::RichText::new("The end")
                         .font(display(26.0))
-                        .color(TEXT),
+                        .color(c().text),
                 );
                 hint(
                     ui,
@@ -347,11 +347,11 @@ impl Live {
                         ui.label(
                             egui::RichText::new(format!("{} / {}", fmt_time(t), fmt_time(d)))
                                 .font(medium(14.0))
-                                .color(TEXT),
+                                .color(c().text),
                         );
                         // progress
                         let (r, _) = ui.allocate_exact_size(Vec2::new(140.0, 6.0), Sense::hover());
-                        ui.painter().rect_filled(r, 3.0, BG3);
+                        ui.painter().rect_filled(r, 3.0, c().bg3);
                         ui.painter().rect_filled(
                             Rect::from_min_size(
                                 r.min,
@@ -361,7 +361,7 @@ impl Live {
                                 ),
                             ),
                             3.0,
-                            PINK,
+                            c().accent,
                         );
                         let plan = &self.stage.sess.plan;
                         let ph = &plan.phases[plan.phase_at(t)];
@@ -373,14 +373,14 @@ impl Live {
                                 crate::plan::layout(&ph.layout).name
                             ))
                             .font(text(13.0))
-                            .color(TEXT2),
+                            .color(c().text2),
                         );
                         ui.separator();
                         let mut sv = self.stage.sess.settings.song_vol;
                         let mut cv = self.stage.sess.settings.clip_vol;
                         let mut ch = false;
                         let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-                        icon(ui.painter(), r, Icon::Music, PINK);
+                        icon(ui.painter(), r, Icon::Music, c().accent);
                         ch |= ui
                             .add(
                                 egui::Slider::new(&mut sv, 0.0..=100.0)
@@ -395,9 +395,9 @@ impl Live {
                             r,
                             Icon::Film,
                             if self.stage.sess.settings.fx.voice {
-                                PINK
+                                c().accent
                             } else {
-                                FAINT
+                                c().faint
                             },
                         );
                         ch |= ui
@@ -447,13 +447,13 @@ enum BarAct {
 pub fn panel_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(if glass() {
-            Color32::from_rgba_unmultiplied(0x34, 0x17, 0x2e, 225)
+            super::themes::rgba(0x34, 0x17, 0x2e, 225)
         } else {
-            BG2
+            c().bg2
         })
         .stroke(Stroke::new(
             1.0_f32,
-            if glass() { glass_edge() } else { BG3 },
+            if glass() { glass_edge() } else { c().bg3 },
         ))
         .corner_radius(if glass() { 18 } else { 8 })
         .inner_margin(egui::Margin::symmetric(14, 10))
@@ -469,13 +469,13 @@ pub fn icon_btn(ui: &mut Ui, ic: Icon, tip: &str) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
     if resp.hovered() {
         ui.painter()
-            .rect_filled(r, if glass() { 255 } else { 4 }, BG3);
+            .rect_filled(r, if glass() { 255 } else { 4 }, c().bg3);
     }
     icon(
         ui.painter(),
         r.shrink(9.0),
         ic,
-        if resp.hovered() { TEXT } else { TEXT2 },
+        if resp.hovered() { c().text } else { c().text2 },
     );
     resp.on_hover_text(tip)
 }
@@ -504,9 +504,9 @@ pub fn moments_ui(
             ui.label(
                 egui::RichText::new(format!("{field}"))
                     .font(display(18.0))
-                    .color(PINK),
+                    .color(c().accent),
             );
-            ui.label(egui::RichText::new(&pick.name).font(bold(14.0)).color(TEXT))
+            ui.label(egui::RichText::new(&pick.name).font(bold(14.0)).color(c().text))
                 .on_hover_text(pick.path.to_string_lossy());
         });
         if pick.kind == Kind::Image {
@@ -527,7 +527,7 @@ pub fn moments_ui(
             ui.label(
                 egui::RichText::new(format!("{} of {}", fmt_at(v), fmt_at(dur)))
                     .font(medium(13.0))
-                    .color(PINK),
+                    .color(c().accent),
             );
             if btn(ui, Btn::Ghost, None, "−1 s", true).clicked() {
                 v = (v - 1.0).max(0.0);
@@ -589,7 +589,7 @@ pub fn moments_ui(
         });
         if !pins.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Pinned:").font(text(12.5)).color(FAINT));
+                ui.label(egui::RichText::new("Pinned:").font(text(12.5)).color(c().faint));
                 for x in &pins {
                     if chip(ui, &fmt_at(*x), false, None)
                         .on_hover_text("Take the clip from here")

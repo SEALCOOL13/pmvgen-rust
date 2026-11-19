@@ -375,6 +375,9 @@ pub struct Settings {
     /// liquid glass look of the window (the web version's switch at the top right)
     #[serde(deserialize_with = "lb")]
     pub glass: bool,
+    /// colour theme of the window: pmv (the web version's), system, catppuccin-mocha, dracula, nord, sweet …
+    #[serde(deserialize_with = "ls")]
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -456,6 +459,7 @@ impl Default for Settings {
             enc_speed: "balanced".into(),
             font: String::new(),
             glass: true,
+            theme: "pmv".into(),
         }
     }
 }
@@ -530,7 +534,8 @@ pub const ENC_SPEEDS: [(&str, &str); 3] = [
 ];
 
 // Keys that are not part of "My settings" (web version's list + this version's own machine settings)
-const NOT_IN_PRESET: [&str; 8] = [
+const NOT_IN_PRESET: [&str; 9] = [
+    "theme",
     "title",
     "shuffle",
     "showQuality",
@@ -654,6 +659,7 @@ impl Settings {
             d.export_crf
         };
         pick(&mut self.codec, &CODECS.map(|c| c.0), &d.codec);
+        pick(&mut self.theme, &crate::app::themes::THEMES.map(|t| t.0), &d.theme);
         pick(&mut self.encoder, &ENCODERS.map(|c| c.0), &d.encoder);
         pick(&mut self.enc_speed, &ENC_SPEEDS.map(|c| c.0), &d.enc_speed);
         // numbers from hand-edited files: finite and in range

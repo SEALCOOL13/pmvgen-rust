@@ -669,10 +669,10 @@ impl Studio {
         // background
         let screen = ctx.screen_rect();
         let bgp = ctx.layer_painter(egui::LayerId::background());
-        bgp.rect_filled(screen, 0.0, BG);
+        bgp.rect_filled(screen, 0.0, c().bg);
         // top bar
         egui::TopBottomPanel::top("studio-top")
-            .frame(egui::Frame::new().fill(alpha(BASE, 0.9)).inner_margin(egui::Margin::symmetric(14, 10)))
+            .frame(egui::Frame::new().fill(alpha(c().base, 0.9)).inner_margin(egui::Margin::symmetric(14, 10)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if btn(ui, Btn::Ghost, Some(Icon::Prev), "Settings", true).on_hover_text("Back to the settings – this PMV stays open").clicked() {
@@ -680,7 +680,7 @@ impl Studio {
                     }
                     ui.separator();
                     let sess = &self.stage.sess;
-                    ui.label(egui::RichText::new(&sess.title).font(display(22.0)).color(TEXT));
+                    ui.label(egui::RichText::new(&sess.title).font(display(22.0)).color(c().text));
                     ui.label(
                         egui::RichText::new(format!(
                             "{} shots · {} BPM · {}{}{}",
@@ -691,7 +691,7 @@ impl Studio {
                             if self.dirty { " · not saved" } else { "" }
                         ))
                         .font(medium(13.0))
-                        .color(PINK2),
+                        .color(c().accent2),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let exporting = self.export.is_some();
@@ -715,11 +715,11 @@ impl Studio {
                         ui.separator();
                         let (r, resp) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
                         if resp.hovered() {
-                            ui.painter().rect_filled(r, 255, BG3);
+                            ui.painter().rect_filled(r, 255, c().bg3);
                         }
                         // redo: the undo arrow mirrored
                         let p = ui.painter();
-                        let c = if resp.hovered() { TEXT } else { TEXT2 };
+                        let c = if resp.hovered() { c().text } else { c().text2 };
                         let s2 = r.shrink(9.0);
                         let sx = |x: f32| s2.right() - (x / 24.0) * s2.width();
                         let sy = |y: f32| s2.top() + (y / 24.0) * s2.height();
@@ -741,7 +741,7 @@ impl Studio {
             .exact_width(side_w)
             .frame(
                 egui::Frame::new()
-                    .fill(BG2)
+                    .fill(c().bg2)
                     .inner_margin(egui::Margin::symmetric(14, 12)),
             )
             .show(ctx, |ui| {
@@ -757,7 +757,7 @@ impl Studio {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(BG)
+                    .fill(c().bg)
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(ctx, |ui| {
@@ -786,7 +786,7 @@ impl Studio {
                         Align2::CENTER_CENTER,
                         "Getting the clips ready …",
                         display(22.0),
-                        TEXT,
+                        c().text,
                     );
                 }
                 if let Some(j) = &self.fill {
@@ -796,7 +796,7 @@ impl Studio {
                         Align2::CENTER_BOTTOM,
                         format!("{m} ({:.0} %)", f * 100.0),
                         medium(14.0),
-                        TEXT,
+                        c().text,
                     );
                 }
                 // transport
@@ -837,10 +837,10 @@ impl Studio {
             ui.label(
                 egui::RichText::new(format!("{} / {}", fmt_at(t), fmt_time(d)))
                     .font(medium(14.0))
-                    .color(TEXT),
+                    .color(c().text),
             );
             ui.separator();
-            ui.label(egui::RichText::new("Zoom").font(medium(13.0)).color(TEXT2));
+            ui.label(egui::RichText::new("Zoom").font(medium(13.0)).color(c().text2));
             ui.add(
                 egui::Slider::new(&mut self.zoom, 1.0..=60.0)
                     .logarithmic(true)
@@ -863,7 +863,7 @@ impl Studio {
                         plan.cuts_before(t)
                     ))
                     .font(text(13.0))
-                    .color(FAINT),
+                    .color(c().faint),
                 );
             });
         });
@@ -873,7 +873,7 @@ impl Studio {
         let plan = self.stage.sess.plan.clone();
         let dur = plan.duration.max(0.1);
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 8.0, BASE);
+        p.rect_filled(rect, 8.0, c().base);
         let left = rect.left() + 8.0;
         let width = (rect.width() - 16.0).max(50.0);
         let pps = (width as f64 / dur) * self.zoom as f64; // pixels per second
@@ -953,14 +953,14 @@ impl Studio {
                         Pos2::new(x, ruler.top() + 12.0),
                         Pos2::new(x, ruler.bottom()),
                     ],
-                    Stroke::new(1.0_f32, FAINT),
+                    Stroke::new(1.0_f32, c().faint),
                 );
                 p.text(
                     Pos2::new(x + 3.0, ruler.top()),
                     Align2::LEFT_TOP,
                     fmt_at(tk),
                     text(11.0),
-                    FAINT,
+                    c().faint,
                 );
             }
             tk += step;
@@ -972,7 +972,7 @@ impl Studio {
             if b < rect.left() || a > rect.right() {
                 continue;
             }
-            let c = layout_color(&ph.layout);
+            let lc = layout_color(&ph.layout);
             let r = Rect::from_min_max(
                 Pos2::new(a.max(rect.left()), band.top()),
                 Pos2::new(b.min(rect.right()) - 1.0, band.bottom()),
@@ -980,17 +980,17 @@ impl Studio {
             p.rect_filled(
                 r,
                 2.0,
-                Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 200),
+                super::themes::rgba(lc[0], lc[1], lc[2], 200),
             );
             if r.width() > 60.0 {
                 // (dark text on light colours, light on dark)
-                let lum = 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
+                let lum = 0.299 * lc[0] as f32 + 0.587 * lc[1] as f32 + 0.114 * lc[2] as f32;
                 p.text(
                     r.left_center() + Vec2::new(5.0, 0.0),
                     Align2::LEFT_CENTER,
                     crate::plan::layout(&ph.layout).name,
                     medium(11.5),
-                    if lum > 140.0 { INK } else { TEXT },
+                    if lum > 140.0 { c().on_accent } else { c().text },
                 );
             }
         }
@@ -1019,7 +1019,7 @@ impl Studio {
                 .map(|p| clip_color(&p.path))
                 .unwrap_or(Color32::from_gray(60));
             let fill = if is_hover {
-                base.gamma_multiply(1.25)
+                super::themes::mix(base, Color32::WHITE, 0.15)
             } else {
                 base
             };
@@ -1039,28 +1039,28 @@ impl Studio {
                         );
                         if r.width() > tw + 40.0 {
                             let g =
-                                p.layout(pk.name.clone(), text(11.5), TEXT, r.width() - tw - 10.0);
+                                p.layout(pk.name.clone(), text(11.5), c().text, r.width() - tw - 10.0);
                             p.with_clip_rect(r).galley(
                                 Pos2::new(tr.right() + 4.0, r.top() + 3.0),
                                 g,
-                                TEXT,
+                                c().text,
                             );
                         }
                     } else if r.width() > 40.0 {
-                        let g = p.layout(pk.name.clone(), text(11.5), TEXT, r.width() - 8.0);
+                        let g = p.layout(pk.name.clone(), text(11.5), c().text, r.width() - 8.0);
                         p.with_clip_rect(r).galley(
                             Pos2::new(r.left() + 4.0, r.top() + 3.0),
                             g,
-                            TEXT,
+                            c().text,
                         );
                     }
                 }
                 if pk.manual {
-                    p.circle_filled(Pos2::new(r.right() - 5.0, r.top() + 5.0), 2.5, SHINE);
+                    p.circle_filled(Pos2::new(r.right() - 5.0, r.top() + 5.0), 2.5, c().shine);
                 }
             }
             if selected {
-                p.rect_stroke(r, 3.0, Stroke::new(2.0_f32, PINK), StrokeKind::Inside);
+                p.rect_stroke(r, 3.0, Stroke::new(2.0_f32, c().accent), StrokeKind::Inside);
             }
         }
         // drops and flashes
@@ -1071,7 +1071,7 @@ impl Studio {
                 p.rect_filled(
                     Rect::from_min_size(Pos2::new(x - 1.0, marks_y), Vec2::new(3.0, marks_h)),
                     1.0,
-                    PINK,
+                    c().accent,
                 );
             }
         }
@@ -1088,7 +1088,7 @@ impl Studio {
                             Vec2::new(1.0, marks_h - 4.0),
                         ),
                         0.0,
-                        alpha(TEXT, 0.4),
+                        alpha(c().text, 0.4),
                     );
                 }
             }
@@ -1115,8 +1115,8 @@ impl Studio {
         }
         if let Some((a, b)) = self.band {
             let r = Rect::from_two_pos(a, b);
-            p.rect_filled(r, 2.0, alpha(PINK, 0.12));
-            p.rect_stroke(r, 2.0, Stroke::new(1.0_f32, PINK), StrokeKind::Inside);
+            p.rect_filled(r, 2.0, alpha(c().accent, 0.12));
+            p.rect_stroke(r, 2.0, Stroke::new(1.0_f32, c().accent), StrokeKind::Inside);
             if resp.drag_stopped() {
                 let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
                 if !add {
@@ -1206,7 +1206,7 @@ impl Studio {
                     Pos2::new(x, rect.top() + 2.0),
                     Pos2::new(x, rect.bottom() - 2.0),
                 ],
-                Stroke::new(2.0_f32, PINK),
+                Stroke::new(2.0_f32, c().accent),
             );
             p.add(egui::Shape::convex_polygon(
                 vec![
@@ -1214,7 +1214,7 @@ impl Studio {
                     Pos2::new(x + 6.0, rect.top() + 2.0),
                     Pos2::new(x, rect.top() + 10.0),
                 ],
-                PINK,
+                c().accent,
                 Stroke::NONE,
             ));
         }
@@ -1222,13 +1222,13 @@ impl Studio {
         if self.zoom > 1.01 {
             let sb =
                 Rect::from_min_size(Pos2::new(left, rect.bottom() - 4.0), Vec2::new(width, 3.0));
-            p.rect_filled(sb, 1.5, BG3);
+            p.rect_filled(sb, 1.5, c().bg3);
             let a = left + (self.scroll / dur) as f32 * width;
             let w = (visible / dur) as f32 * width;
             p.rect_filled(
                 Rect::from_min_size(Pos2::new(a, sb.top()), Vec2::new(w.max(8.0), 3.0)),
                 1.5,
-                FAINT,
+                c().faint,
             );
         }
     }
@@ -1242,9 +1242,9 @@ impl Studio {
                 ui.label(
                     egui::RichText::new("Exporting")
                         .font(display(20.0))
-                        .color(TEXT),
+                        .color(c().text),
                 );
-                ui.label(egui::RichText::new(&p.msg).font(medium(13.5)).color(TEXT2));
+                ui.label(egui::RichText::new(&p.msg).font(medium(13.5)).color(c().text2));
                 progress_bar(ui, p.frac);
                 let el = e.started.elapsed().as_secs_f64();
                 hint(
@@ -1274,7 +1274,7 @@ impl Studio {
             });
         } else if let Some(p) = self.last_export.clone() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Saved:").font(medium(13.0)).color(OK));
+                ui.label(egui::RichText::new("Saved:").font(medium(13.0)).color(c().ok));
                 ui.label(
                     egui::RichText::new(
                         p.file_name()
@@ -1282,7 +1282,7 @@ impl Studio {
                             .unwrap_or_default(),
                     )
                     .font(medium(13.0))
-                    .color(TEXT),
+                    .color(c().text),
                 );
                 if btn(ui, Btn::Ghost, Some(Icon::Folder), "Show", true).clicked() {
                     super::open_folder(&p);
@@ -1301,7 +1301,7 @@ impl Studio {
                 format!("{n} shots selected")
             })
             .font(display(22.0))
-            .color(TEXT),
+            .color(c().text),
         );
         if n == 0 {
             hint(ui, "Click a shot in the timeline to select it – Ctrl+click adds one, Shift+click a range, drag over empty space selects all in the box, Ctrl+A everything. Then swap the clips, or change the moment they are taken from.");
@@ -1316,14 +1316,14 @@ impl Studio {
                 &format!("{} different clips", v.len()),
                 "most used first",
             );
-            for (name, c) in v.iter().take(12) {
+            for (name, n) in v.iter().take(12) {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("{c}×"))
+                        egui::RichText::new(format!("{n}×"))
                             .font(medium(12.5))
-                            .color(PINK),
+                            .color(c().accent),
                     );
-                    ui.label(egui::RichText::new(name).font(text(13.0)).color(TEXT2));
+                    ui.label(egui::RichText::new(name).font(text(13.0)).color(c().text2));
                 });
             }
         } else {
@@ -1411,7 +1411,7 @@ impl Studio {
             });
             if let Some(j) = &self.swap {
                 let (f, m) = j.progress();
-                ui.label(egui::RichText::new(m).font(medium(13.0)).color(TEXT2));
+                ui.label(egui::RichText::new(m).font(medium(13.0)).color(c().text2));
                 progress_bar(ui, f);
             }
             // by hand
