@@ -63,6 +63,13 @@ pub fn fmt_at(sec: f64) -> String {
     format!("{}:{:04.1}", m as i64, sec - m * 60.0)
 }
 
+/// "1:23.456" – an exact moment (to the millisecond)
+pub fn fmt_ms(sec: f64) -> String {
+    let sec = if sec.is_finite() { sec.max(0.0) } else { 0.0 };
+    let ms = (sec * 1000.0).round() as i64;
+    format!("{}:{:02}.{:03}", ms / 60000, (ms / 1000) % 60, ms % 1000)
+}
+
 /// "1:23", "1:02:03", "83" → seconds; "" → 0; None = not a time
 pub fn parse_time(v: &str) -> Option<f64> {
     let v = v.trim().replace(',', ".");

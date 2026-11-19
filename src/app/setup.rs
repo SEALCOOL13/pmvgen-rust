@@ -770,8 +770,211 @@ fn template_timeline(ui: &mut Ui, tpl: &crate::template::Template, dur: f64) {
     }
 }
 
+/// PMV as template: which music, and where in the PMV it starts (a time or a frame)
+fn template_music(ui: &mut Ui, app: &mut App) {
+    use crate::template::Music;
+    let Some((_, raw)) = app.tpl.raw.clone() else {
+        return;
+    };
+    let fps = raw.fps;
+    let busy = app.tpl.load.is_some();
+    let music = app.tpl.music.clone().unwrap_or(Music::Pmv);
+    let mut choice = matches!(music, Music::File { .. });
+    lab(
+        ui,
+        "Music",
+        "the PMV's own, or the same song as a file – where it plays in the PMV is found by itself",
+    );
+    let was = choice;
+    ui.add_enabled_ui(!busy, |ui| {
+        seg(
+            ui,
+            &mut choice,
+            &[
+                (
+                    false,
+                    "From the PMV",
+                    "The PMV's soundtrack, from the start below on",
+                ),
+                (
+                    true,
+                    "Song file",
+                    "The same song as a clean file – lined up with the PMV's soundtrack",
+                ),
+            ],
+        );
+    });
+    let pick_song = || {
+        rfd::FileDialog::new()
+            .add_filter("Music", &super::AUDIO_EXT)
+            .add_filter("Video (its music)", &library::VIDEO)
+            .pick_file()
+    };
+    if choice != was {
+        if choice {
+            if let Some(f) = pick_song() {
+                app.template_music(Music::File { path: f, at: 0.0 }, app.tpl.start, true);
+            }
+        } else {
+            app.tpl.fit = None;
+            app.template_music(Music::Pmv, app.tpl.start, false);
+        }
+    }
+    if let Music::File { path, at } = &music {
+        let path = path.clone();
+        ui.horizontal_wrapped(|ui| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+            icon(ui.painter(), r, Icon::Music, c().accent);
+            ui.label(
+                egui::RichText::new(name)
+                    .font(semibold(14.0))
+                    .color(c().text),
+            );
+            let place = if *at >= 0.0 {
+                format!("plays from {} of the PMV", crate::util::fmt_ms(*at))
+            } else {
+                format!("the PMV begins {} into the song", crate::util::fmt_ms(-*at))
+            };
+            let sure = match app.tpl.fit {
+                Some(f) if f.good() => format!(
+                    " · found clearly ({} % of the PMV matches)",
+                    (f.agree * 100.0).round()
+                ),
+                Some(f) => format!(
+                    " · unsure ({} % of the PMV matches) – check the start",
+                    (f.agree * 100.0).round()
+                ),
+                None => String::new(),
+            };
+            ui.label(
+                egui::RichText::new(format!("{place}{sure}"))
+                    .font(text(13.0))
+                    .color(if app.tpl.fit.is_some_and(|f| !f.good()) {
+                        c().accent2
+                    } else {
+                        c().text2
+                    }),
+            );
+            if btn(ui, Btn::Ghost, None, "Find again", !busy).clicked() {
+                app.template_music(
+                    Music::File {
+                        path: path.clone(),
+                        at: *at,
+                    },
+                    app.tpl.start,
+                    true,
+                );
+            }
+            if btn(ui, Btn::Ghost, None, "Other song …", !busy).clicked() {
+                if let Some(f) = pick_song() {
+                    app.template_music(Music::File { path: f, at: 0.0 }, app.tpl.start, true);
+                }
+            }
+        });
+    }
+    lab(
+        ui,
+        "Music starts at",
+        "the moment of the PMV where the new PMV begins – as a time or a frame; before it is left out",
+    );
+    let mut apply: Option<f64> = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let t = field(ui, &mut app.tpl.start_text, "0:00.000", 120.0);
+        if t.lost_focus() {
+            if let Some(v) = parse_time(&app.tpl.start_text) {
+                apply = Some(v);
+            }
+        }
+        if fps > 0.0 {
+            ui.label(
+                egui::RichText::new("= frame")
+                    .font(text(13.0))
+                    .color(c().text2),
+            );
+            let f = field(ui, &mut app.tpl.frame_text, "0", 90.0);
+            if f.lost_focus() {
+                if let Ok(n) = app.tpl.frame_text.trim().parse::<f64>() {
+                    apply = Some(n.max(0.0) / fps);
+                }
+            }
+            ui.label(
+                egui::RichText::new(format!("at {} fps", (fps * 1000.0).round() / 1000.0))
+                    .font(text(12.5))
+                    .color(c().faint),
+            );
+            let step = 1.0 / fps;
+            if btn(ui, Btn::Normal, None, "− 1 frame", !busy).clicked() {
+                apply = Some((app.tpl.start - step).max(0.0));
+            }
+            if btn(ui, Btn::Normal, None, "+ 1 frame", !busy).clicked() {
+                apply = Some(app.tpl.start + step);
+            }
+        }
+        if btn(
+            ui,
+            Btn::Ghost,
+            None,
+            "From the beginning",
+            !busy && app.tpl.start > 0.0,
+        )
+        .clicked()
+        {
+            apply = Some(0.0);
+        }
+    });
+    if let Some(job) = &app.tpl.load {
+        let (f, m) = job.progress();
+        ui.label(egui::RichText::new(m).font(text(13.0)).color(c().text2));
+        progress_bar(ui, f);
+    }
+    if let Some(v) = apply {
+        // (frames are whole: the start sits on one)
+        let v = if fps > 0.0 {
+            (v * fps).round() / fps
+        } else {
+            v
+        };
+        let v = v.clamp(0.0, (raw.duration - 1.0).max(0.0));
+        if (v - app.tpl.start).abs() > 1e-6 && !busy {
+            app.template_music(music, v, false);
+        } else {
+            app.tpl.sync_text();
+        }
+    }
+}
+
 fn template_pane(ui: &mut Ui, app: &mut App) {
-    hint(ui, "An existing PMV is analyzed: music, every cut, the layouts (split screens) and flashes are taken over – only the content comes from your clips. Effects like glitch or text are burned into the picture; instead, your effects run at the same moments.");
+    use crate::template::Kind;
+    // classic: follows the beat · exact cuts: copies the editing frame by frame
+    let was = app.tpl.kind;
+    ui.add_enabled_ui(app.tpl.scan.is_none(), |ui| {
+        seg(
+            ui,
+            &mut app.tpl.kind,
+            &[
+                (Kind::Classic, "Follow the beat", "Cuts, layouts and flashes on the music's beats, with the PMV's music"),
+                (Kind::Exact, "Exact cuts", "Every cut exactly where the PMV has it, frame by frame – whatever the beat; choose the music and where it starts"),
+            ],
+        );
+    });
+    if app.tpl.kind == Kind::Classic {
+        hint(ui, "An existing PMV is analyzed: music, every cut, the layouts (split screens) and flashes are taken over – only the content comes from your clips. Effects like glitch or text are burned into the picture; instead, your effects run at the same moments.");
+    } else {
+        hint(ui, "The PMV is looked at frame by frame: every cut to another scene – exactly where its maker put it, whatever the beat – the layouts and flashes are taken over, only the content comes from your clips. The music can be the PMV's own or the same song as a file, starting where you set it. Takes longer to analyze.");
+    }
+    // (the other way on a PMV analysed already: analysed again)
+    if app.tpl.kind != was && app.tpl.scan.is_none() {
+        if let (Some(p), true) = (app.tpl.pmv.clone(), app.tpl.raw.is_some()) {
+            let n = app.tpl.name.clone();
+            app.tpl.load = None;
+            app.scan_template(p, n);
+        }
+    }
     if let Some(job) = &app.tpl.scan {
         let (f, m) = job.progress();
         ui.horizontal(|ui| {
@@ -828,9 +1031,17 @@ fn template_pane(ui: &mut Ui, app: &mut App) {
                 ui.add_space(6.0);
             }
         });
+        if app.tpl.scanned == crate::template::Kind::Exact {
+            template_music(ui, app);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if btn(ui, Btn::Ghost, None, "Other template", true).clicked() {
+                if let Some(j) = &app.tpl.load {
+                    j.cancel.store(true, Ordering::SeqCst);
+                }
                 app.tpl.result = None;
+                app.tpl.raw = None;
+                app.tpl.load = None;
             }
         });
         return;
@@ -1202,7 +1413,7 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
                 0 => opt(ui, &mut s.best_spots, "Best moments instead of random", "Looks at several spots per video (motion, skin, contrast) and takes the best one"),
                 1 => opt(ui, &mut s.pace_match, "Clip speed follows the music (experimental)", "Fast, busy music gets clips with fast motion, calm music slow ones. Measures how fast the motion is at the spot a clip is taken from – the more clips have been prepared, the better it knows your library"),
                 2 => opt(ui, &mut s.beat_sync, "Motion on the beat (experimental)", "Measures the rhythm of the motion in each clip and lines it up with the beat – a clip comes in on a turn of the motion and plays up to 12 % faster or slower. Clips take about 1 s longer to prepare; works best with steady, repeating motion, a still camera and clips that stay on for a few beats"),
-                3 => opt(ui, &mut s.clean_cuts, "Clean cuts", "With best moments: a clip starts where its scene runs on for the next few seconds – no hidden cut inside the clip that jumps to another scene by itself"),
+                3 => opt(ui, &mut s.clean_cuts, "Clean cuts", "A clip starts where its scene runs on long enough for its shot – every frame around it is checked, so no hidden cut inside the clip jumps to another scene by itself"),
                 _ => opt(ui, &mut s.smart_crop, "Smart crop", "The crop follows what matters in the clip instead of sticking to the center"),
             };
         });

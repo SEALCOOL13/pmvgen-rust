@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod align;
 mod app;
 mod bars;
 mod beats;
@@ -25,6 +26,7 @@ mod project;
 mod raster;
 mod render;
 mod settings;
+mod shots;
 mod show;
 mod smart;
 mod song;
@@ -42,7 +44,7 @@ const HELP: &str = "PMV Generator 2.38.10 (native)
   pmvgen [FILES / FOLDERS / PROJECT]   open the app (songs, clip folders and a .pmvproj given are opened)
 
   pmvgen --export --song FILE --clips DIR [--clips DIR …] --out FILE
-         [--template PMV] [--settings FILE.pmvgen.json] [--from SEC] [--to SEC] [--seed N]
+         [--template PMV [--exact [--music-start TIME]]] [--settings FILE.pmvgen.json] [--from SEC] [--to SEC] [--seed N]
          [--save-project FILE.pmvproj] [OUTPUT OPTIONS]
                                        generate a PMV and render it (no window)
   pmvgen --generate --song FILE --clips DIR [--clips DIR …] --save-project FILE.pmvproj [...]
@@ -51,6 +53,12 @@ const HELP: &str = "PMV Generator 2.38.10 (native)
                                        render a saved project again – the same video
   pmvgen --analyze FILE                print tempo and beats of a song (JSON)
   pmvgen --encoders                    list the video encoders that work on this computer
+  pmvgen --shots VIDEO [--from SEC] [--to SEC]
+                                       list where the video cuts to another scene
+  pmvgen --align PMV --clips SONG      where the song file plays in the PMV's soundtrack
+  (--template: the PMV's cuts, layouts and flashes on the music's beats, with its music. With --exact every cut
+   exactly where the PMV has it, frame by frame; --song is then the same song as a file, lined up with the
+   PMV's soundtrack, and --music-start where in the PMV the music – and the new PMV – begins, e.g. 0:05.300)
 
 OUTPUT OPTIONS
   --codec h264|h265|av1|web   --encoder auto|cpu|nvenc|qsv|amf|vaapi|mf   --preset fast|balanced|small
@@ -91,6 +99,8 @@ struct Cli {
     save_project: Option<PathBuf>,
     from: f64,
     to: Option<f64>,
+    music_start: Option<f64>,
+    exact: bool,
     seed: Option<u64>,
     part: Option<(f64, f64)>,
     overrides: Vec<(String, String)>,
@@ -112,10 +122,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<Cli> {
                 return Ok(c);
             }
             "--export" | "--generate" | "--encoders" => c.mode = a[2..].to_string(),
-            "--analyze" | "--render" => {
+            "--analyze" | "--render" | "--shots" | "--shots-dump" | "--align" => {
                 c.mode = a[2..].to_string();
                 let v = PathBuf::from(val(i)?);
-                if a == "--analyze" {
+                if a != "--render" {
                     c.song = Some(v);
                 } else {
                     c.project = Some(v);
@@ -136,6 +146,13 @@ fn parse_args(args: &[String]) -> anyhow::Result<Cli> {
             }
             "--from" => {
                 c.from = val(i)?.parse()?;
+                i += 1;
+            }
+            "--exact" => c.exact = true,
+            "--music-start" => {
+                let v = val(i)?;
+                c.music_start =
+                    Some(util::parse_time(&v).ok_or_else(|| anyhow::anyhow!("bad time {v}"))?);
                 i += 1;
             }
             "--to" => {
@@ -226,7 +243,8 @@ fn cli(args: &[String]) -> anyhow::Result<()> {
             print!("{HELP}");
             return Ok(());
         }
-        "export" | "generate" | "render" | "analyze" | "encoders" => {}
+        "export" | "generate" | "render" | "analyze" | "encoders" | "shots" | "shots-dump"
+        | "align" => {}
         _ => anyhow::bail!("nothing to do\n\n{HELP}"),
     }
     ff::available()?;
@@ -234,6 +252,40 @@ fn cli(args: &[String]) -> anyhow::Result<()> {
         println!("Codec  Encoder kind  ffmpeg encoder");
         for (codec, hw, name) in enc::survey() {
             println!("{codec:<6} {hw:<13} {name}");
+        }
+        return Ok(());
+    }
+    if c.mode == "align" {
+        let pmv = c.song.clone().unwrap_or_default();
+        let song = c
+            .clips
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("--align PMV needs --clips SONG"))?;
+        let f = align::find(&pmv, &song, &AtomicBool::new(false))?;
+        println!(
+            "The song starts at {:.4} s of the PMV (clarity {:.1}, pieces agreeing {:.0} %)",
+            f.offset,
+            f.clarity,
+            f.agree * 100.0
+        );
+        return Ok(());
+    }
+    if c.mode == "shots" || c.mode == "shots-dump" {
+        let v = c.song.clone().unwrap_or_default();
+        let secs = c.to.map(|t| t - c.from);
+        if c.mode == "shots" {
+            print!(
+                "{}",
+                shots::report(&v, c.from, secs, shots::NetUse::Always)?
+            );
+            println!("--- hybrid (clip spots):");
+            print!(
+                "{}",
+                shots::report(&v, c.from, secs, shots::NetUse::Doubtful)?
+            );
+        } else {
+            print!("{}", shots::dump(&v, c.from, secs)?);
         }
         return Ok(());
     }
@@ -276,8 +328,46 @@ fn cli(args: &[String]) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("--song is missing"))?;
     let rate = player::device_rate_or(48000);
     let (song, tpl) = if let Some(t) = &c.template {
+        let kind = if c.exact {
+            template::Kind::Exact
+        } else {
+            template::Kind::Classic
+        };
+        if kind == template::Kind::Classic && (c.song.is_some() || c.music_start.is_some()) {
+            anyhow::bail!("--song and --music-start with a template need --exact (the classic template uses the PMV's music)");
+        }
         eprintln!("Analysing the template {} …", t.display());
-        let (s, tpl) = template::scan(t, rate, &|_, _| {}, &cancel)?;
+        let (s, raw) = template::scan(t, rate, kind, &|_, _| {}, &cancel)?;
+        let (s, tpl) = if kind == template::Kind::Classic {
+            (s, raw)
+        } else {
+            let music = match &c.song {
+                Some(sp) => {
+                    let f = align::find(t, sp, &cancel)?;
+                    eprintln!(
+                        "The song plays from {:.3} s of the PMV (clarity {:.1}, {:.0} % of the PMV matches)",
+                        f.offset,
+                        f.clarity,
+                        f.agree * 100.0
+                    );
+                    template::Music::File {
+                        path: sp.clone(),
+                        at: f.offset,
+                    }
+                }
+                None => template::Music::Pmv,
+            };
+            let start = c.music_start.unwrap_or(match &music {
+                template::Music::File { at, .. } => at.max(0.0),
+                template::Music::Pmv => 0.0,
+            });
+            if music == template::Music::Pmv && start == 0.0 {
+                let tpl = raw.shifted(0.0, s.duration());
+                (s, tpl)
+            } else {
+                template::with_music(t, &raw, &music, start, rate, &|_| {}, &cancel)?
+            }
+        };
         eprintln!(
             "Template: {} cuts, {} layout changes, {} flashes",
             tpl.stats.cuts, tpl.stats.layout_changes, tpl.stats.flashes

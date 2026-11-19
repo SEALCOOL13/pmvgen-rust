@@ -1,6 +1,13 @@
 // PMV as template: an existing PMV is analysed – music, cuts, layouts (split screens) and flashes – and its
-// timing drives a new show with your own clips. A port of pmvscan.js: the video's frames are scaled down to
-// 96×54 and measured (brightness, colour, difference to the frame before per region, dividers, mirroring).
+// timing drives a new show with your own clips. Two ways:
+// - Classic (a port of pmvscan.js): the video's frames are scaled down to 96×54 and measured 20 times a
+//   second (brightness, colour, difference to the frame before per region, dividers, mirroring); cuts and
+//   flashes move onto the music's beats. The PMV's music is the song.
+// - Exact cuts: every frame of the PMV is looked at (at its own frame rate, up to 60 per second); where it cuts
+//   to another scene comes from the shot detector (shots.rs – a neural network and classical measures), exact
+//   to the frame and independent of the beats; layouts, cuts in single fields of a split screen and flashes
+//   from the same 96×54 measures. The timeline is kept in the PMV's own time; the music (the PMV's or the same
+//   song as a file) and where it starts are applied with shifted() / with_music().
 // Effects like glitch or text are burned into the picture and can't be taken over – timing and structure are.
 
 use crate::ff;
@@ -9,15 +16,27 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const GW: usize = 96; // measuring picture for layouts and cuts
-const GH: usize = 54;
-/// Frames looked at per second of the PMV. The web version plays the video at 3× and measures every frame the
-/// screen shows – about 20 per second of video on a 60 Hz screen; the thresholds below are calibrated on that.
+const GW: usize = crate::shots::TW; // measuring picture for layouts and cuts
+const GH: usize = crate::shots::TH;
+/// Classic: frames looked at per second of the PMV. The web version plays the video at 3× and measures every
+/// frame the screen shows – about 20 per second of video on a 60 Hz screen; its thresholds are calibrated on that.
 const SAMPLE_FPS: f64 = 20.0;
+/// Exact cuts: the most frames per second looked at (a 120 fps PMV is looked at in 60)
+const MAX_FPS: f64 = 60.0;
+
+/// How a PMV is used as template
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Kind {
+    /// cuts and flashes follow the music's beats; the PMV's music
+    #[default]
+    Classic,
+    /// every cut exactly where the PMV has it, whatever the beat; music and its start can be chosen
+    Exact,
+}
 
 /// Colours of the layouts in the template timeline (the web version's)
 pub const LAYOUT_COLORS: [(&str, [u8; 3]); 6] = [
@@ -90,6 +109,73 @@ pub struct Template {
     pub events: Vec<TplEvent>,
     pub segs: Vec<TplSeg>,
     pub stats: TplStats,
+    /// the PMV's frame rate as it was looked at (for times as frame numbers)
+    #[serde(default)]
+    pub fps: f64,
+    /// the PMV's length
+    #[serde(default)]
+    pub duration: f64,
+}
+
+impl Template {
+    /// The template for music that starts at PMV time `shift` and lasts `dur` seconds: every time moved by
+    /// −shift, what lies outside left out; it opens with the layout showing at `shift`
+    pub fn shifted(&self, shift: f64, dur: f64) -> Template {
+        let inside = |t: f64| t >= -1e-9 && t < dur;
+        let mut events: Vec<TplEvent> = Vec::new();
+        // the layout at the new start
+        if let Some(sg) = self.segs.iter().rev().find(|sg| sg.t <= shift + 1e-9) {
+            events.push(TplEvent::Layout {
+                t: 0.0,
+                layout: sg.layout.clone(),
+                dir: sg.dir.clone(),
+            });
+        }
+        for ev in &self.events {
+            let t = ev.t() - shift;
+            if t > 1e-9 && inside(t) {
+                let mut e = ev.clone();
+                e.set_t(t);
+                events.push(e);
+            }
+        }
+        let segs: Vec<TplSeg> = self
+            .segs
+            .iter()
+            .filter(|sg| sg.end - shift > 0.0 && sg.t - shift < dur)
+            .map(|sg| TplSeg {
+                t: (sg.t - shift).max(0.0),
+                end: (sg.end - shift).min(dur),
+                layout: sg.layout.clone(),
+                dir: sg.dir.clone(),
+            })
+            .collect();
+        let mut layout_time: BTreeMap<String, f64> = BTreeMap::new();
+        for sg in &segs {
+            *layout_time.entry(sg.layout.clone()).or_default() += sg.end - sg.t;
+        }
+        let stats = TplStats {
+            cuts: events
+                .iter()
+                .filter(|e| !matches!(e, TplEvent::Flash { .. }))
+                .count(),
+            layout_changes: events.iter().filter(|e| e.is_layout()).count(),
+            flashes: events
+                .iter()
+                .filter(|e| matches!(e, TplEvent::Flash { .. }))
+                .count(),
+            layout_time,
+            frames: self.stats.frames,
+        };
+        Template {
+            name: self.name.clone(),
+            events,
+            segs,
+            stats,
+            fps: self.fps,
+            duration: dur,
+        }
+    }
 }
 
 // ---------- Measuring one frame ----------
@@ -339,7 +425,8 @@ fn region_diff(f: &Frame, spec: &(&str, Vec<usize>)) -> f64 {
         .fold(0.0, f64::max)
 }
 
-fn build(frames: &mut [Frame], beats: &[f64], duration: f64, name: &str) -> Template {
+/// Classic: cuts from the differences between frames, events moved onto beats within 80 ms (the web version)
+fn build_classic(frames: &mut [Frame], beats: &[f64], duration: f64, name: &str) -> Template {
     let pink = [0xff, 0x3e, 0x8a];
     // 1. Flashes: the brightness jumps up sharply
     let mut events: Vec<TplEvent> = Vec::new();
@@ -525,11 +612,225 @@ fn build(frames: &mut [Frame], beats: &[f64], duration: f64, name: &str) -> Temp
         events,
         segs: out_segs,
         stats,
+        fps: SAMPLE_FPS,
+        duration,
+    }
+}
+
+/// Exact cuts. `full`: the frames where the shot detector saw the picture change to another scene
+fn build_exact(
+    frames: &mut [Frame],
+    full: &[usize],
+    fps: f64,
+    duration: f64,
+    name: &str,
+) -> Template {
+    let pink = [0xff, 0x3e, 0x8a];
+    // 1. Flashes: the brightness jumps up sharply (within 50 ms – the web version's frame step)
+    let k = ((fps / 20.0).round() as usize).max(1);
+    let mut events: Vec<TplEvent> = Vec::new();
+    let mut flashes = 0;
+    let mut last_flash = f64::NEG_INFINITY;
+    for i in k..frames.len() {
+        let (pl, fl) = (frames[i - k].luma, frames[i].luma);
+        let rising = frames[i].luma > frames[i - 1].luma;
+        if fl - pl > 0.22 && fl > 0.55 && rising && frames[i].t - last_flash > 0.1 {
+            let [r, g, b] = frames[i].color;
+            let is_pink = r > 200.0 && b > 90.0 && g < r - 50.0;
+            events.push(TplEvent::Flash {
+                t: frames[i].t,
+                strength: ((fl - pl) * 2.0).min(1.0),
+                color: if is_pink { pink } else { [255, 255, 255] },
+            });
+            last_flash = frames[i].t;
+            flashes += 1;
+        }
+        if fl - pl > 0.22 && fl > 0.55 {
+            frames[i].flash = true;
+        }
+    }
+    // 2. Cuts: where the whole picture goes to another scene (the shot detector), and – in a split screen –
+    //    where one field gets a new clip: a big difference in a region against the motion just before
+    let mut cuts_idx: Vec<usize> = full
+        .iter()
+        .copied()
+        .filter(|&i| i > 0 && i < frames.len())
+        .collect();
+    let near_full = |i: usize| full.iter().any(|&f| f.abs_diff(i) <= 2);
+    let mut recent: Vec<f64> = Vec::new();
+    let gap = (0.15 * fps).round() as usize;
+    let mut last_reg: Option<usize> = None;
+    for i in 1..frames.len() {
+        let f = &frames[i];
+        let regional = f
+            .diff
+            .c3
+            .iter()
+            .chain(&f.diff.c2)
+            .chain(&f.diff.q4)
+            .chain(&f.diff.r3)
+            .fold(0.0f64, |a, &b| a.max(b));
+        let split = f.layout.is_some_and(|l| l.id != "full")
+            && frames[i - 1].layout.is_some_and(|l| l.id != "full");
+        if split && !f.flash && !frames[i - 1].flash && !near_full(i) {
+            let local = if recent.is_empty() {
+                0.02
+            } else {
+                let mut s = recent.clone();
+                s.sort_by(|a, b| a.total_cmp(b));
+                s[s.len() / 2]
+            };
+            if regional > (local * 3.2).max(0.1) && last_reg.is_none_or(|l| i - l > gap) {
+                cuts_idx.push(i);
+                last_reg = Some(i);
+            }
+        }
+        recent.push(regional);
+        if recent.len() > ((0.6 * fps) as usize).max(12) {
+            recent.remove(0);
+        }
+    }
+    cuts_idx.sort_unstable();
+    cuts_idx.dedup();
+    // 3. Sections between cuts: the layout most of the frames in its middle show
+    let mut bounds = vec![0usize];
+    bounds.extend(&cuts_idx);
+    bounds.push(frames.len());
+    struct Seg {
+        t: f64,
+        i: usize,
+        layout: &'static str,
+        dir: &'static str,
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    for w in bounds.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if a >= frames.len() {
+            break;
+        }
+        let lo = a + (b - a) / 5;
+        let hi = (b - (b - a) / 5).max(lo + 1).min(frames.len());
+        let mut votes: Vec<(Lay, usize)> = Vec::new();
+        for f in &frames[lo.min(frames.len())..hi] {
+            if let Some(l) = f.layout {
+                match votes.iter_mut().find(|(v, _)| *v == l) {
+                    Some(v) => v.1 += 1,
+                    None => votes.push((l, 1)),
+                }
+            }
+        }
+        // (the first with the most votes – the web version's sort keeps the first of equals too)
+        let best = votes
+            .iter()
+            .fold(None::<&(Lay, usize)>, |acc, v| match acc {
+                Some(a) if a.1 >= v.1 => Some(a),
+                _ => Some(v),
+            })
+            .map(|v| v.0);
+        let prev = segs.last();
+        let (mut id, mut dir) = match (best, prev) {
+            (Some(l), _) => (l.id, l.dir),
+            (None, Some(p)) => (p.layout, p.dir),
+            (None, None) => ("full", "cols"),
+        };
+        // very short sections (1–3 frames) are too uncertain for a layout change
+        if let Some(p) = prev {
+            if b - a < 4 {
+                id = p.layout;
+                dir = p.dir;
+            }
+        }
+        segs.push(Seg {
+            t: frames[a].t,
+            i: a,
+            layout: id,
+            dir,
+        });
+    }
+    // 4. Events: a layout change, or a cut of some fields
+    for (k, sg) in segs.iter().enumerate() {
+        let prev = if k > 0 { segs.get(k - 1) } else { None };
+        if prev.is_none_or(|p| p.layout != sg.layout || p.dir != sg.dir) {
+            events.push(TplEvent::Layout {
+                t: sg.t,
+                layout: sg.layout.into(),
+                dir: sg.dir.into(),
+            });
+            continue;
+        }
+        let f = &frames[sg.i];
+        let specs = regions(sg.layout, sg.dir);
+        let ds: Vec<f64> = specs.iter().map(|sp| region_diff(f, sp)).collect();
+        let top = ds.iter().copied().fold(0.0, f64::max);
+        let groups: Vec<usize> = ds
+            .iter()
+            .enumerate()
+            .filter(|(_, &d)| d > (top * 0.45).max(0.07))
+            .map(|(g, _)| g)
+            .collect();
+        events.push(TplEvent::Cut {
+            t: sg.t,
+            groups: if groups.len() == specs.len() {
+                None
+            } else {
+                Some(groups)
+            },
+        });
+    }
+    events.sort_by(|a, b| {
+        a.t()
+            .total_cmp(&b.t())
+            .then(b.is_layout().cmp(&a.is_layout()))
+    });
+
+    let mut layout_time: BTreeMap<String, f64> = BTreeMap::new();
+    let mut out_segs = Vec::new();
+    for (k, sg) in segs.iter().enumerate() {
+        let end = segs.get(k + 1).map(|s| s.t).unwrap_or(duration);
+        *layout_time.entry(sg.layout.to_string()).or_default() += end - sg.t;
+        out_segs.push(TplSeg {
+            t: sg.t,
+            end,
+            layout: sg.layout.into(),
+            dir: sg.dir.into(),
+        });
+    }
+    let stats = TplStats {
+        cuts: events
+            .iter()
+            .filter(|e| !matches!(e, TplEvent::Flash { .. }))
+            .count(),
+        layout_changes: events.iter().filter(|e| e.is_layout()).count(),
+        flashes,
+        layout_time,
+        frames: frames.len(),
+    };
+    Template {
+        name: name.to_string(),
+        events,
+        segs: out_segs,
+        stats,
+        fps,
+        duration,
     }
 }
 
 /// Analyse a PMV: its music (as a song) and its structure. progress: 0–1 with a text
 pub fn scan(
+    path: &Path,
+    rate: u32,
+    kind: Kind,
+    progress: &(dyn Fn(f32, &str) + Sync),
+    cancel: &AtomicBool,
+) -> Result<(Song, Template)> {
+    match kind {
+        Kind::Classic => scan_classic(path, rate, progress, cancel),
+        Kind::Exact => scan_exact(path, rate, progress, cancel),
+    }
+}
+
+/// Classic: the PMV looked at 20 times a second, its music as the song. progress: 0–1 with a text
+fn scan_classic(
     path: &Path,
     rate: u32,
     progress: &(dyn Fn(f32, &str) + Sync),
@@ -609,9 +910,123 @@ pub fn scan(
     }
     progress(0.97, "Evaluating …");
     let name = song.name.clone();
-    let tpl = build(&mut frames, &song.a.beats, duration, &name);
+    let tpl = build_classic(&mut frames, &song.a.beats, duration, &name);
     progress(1.0, "Done");
     Ok((song, tpl))
+}
+
+/// Exact cuts: every frame, the shot detector. progress: 0–1 with a text
+fn scan_exact(
+    path: &Path,
+    rate: u32,
+    progress: &(dyn Fn(f32, &str) + Sync),
+    cancel: &AtomicBool,
+) -> Result<(Song, Template)> {
+    ff::available()?;
+    let probe = ff::probe(path)?;
+    if !probe.has_video {
+        bail!("This file has no video");
+    }
+    progress(0.0, "Reading music …");
+    // (the PMV's own music – also when a song file is used instead, its beats drive the effects then)
+    let song = song::load(
+        path,
+        0.0,
+        None,
+        rate,
+        &|p| progress(0.08 * p, "Reading music …"),
+        cancel,
+    )
+    .map_err(|e| anyhow::anyhow!("The music of this video can't be read: {e}"))?;
+    let duration = if probe.dur > 0.0 {
+        probe.dur
+    } else {
+        song.duration()
+    };
+    let fps = if probe.fps > 0.0 {
+        probe.fps.min(MAX_FPS)
+    } else {
+        25.0
+    };
+    progress(0.08, "Looking at every frame …");
+    let mut frames: Vec<Frame> = Vec::new();
+    let mut prev: Option<Vec<f32>> = None;
+    let mut on_frame = |i: usize, px: &[u8]| {
+        let (mut f, gray) = measure(px, prev.as_deref());
+        f.t = i as f64 / fps;
+        prev = Some(gray);
+        frames.push(f);
+    };
+    let track = crate::shots::decode(
+        path,
+        0.0,
+        None,
+        fps,
+        Some(&mut on_frame),
+        &|t| {
+            if duration > 0.0 {
+                progress(
+                    0.08 + 0.6 * (t / duration).min(1.0) as f32,
+                    "Looking at every frame …",
+                );
+            }
+        },
+        cancel,
+    )?;
+    if frames.len() < 10 {
+        bail!("Too few frames read – is this a video?");
+    }
+    progress(0.7, "Finding every cut …");
+    let cuts = crate::shots::detect(&track, crate::shots::NetUse::Always, cancel);
+    if cancel.load(Ordering::SeqCst) {
+        bail!("Cancelled");
+    }
+    progress(0.97, "Evaluating …");
+    let full: Vec<usize> = cuts.iter().map(|b| b.i).collect();
+    let tpl = build_exact(&mut frames, &full, fps, duration, &song.name);
+    progress(1.0, "Done");
+    Ok((song, tpl))
+}
+
+/// The music for a PMV used as template
+#[derive(Clone, Debug, PartialEq)]
+pub enum Music {
+    /// the PMV's own soundtrack
+    Pmv,
+    /// a song file; `at` = the PMV time where the song file's start plays (from align::find, or set by hand)
+    File { path: PathBuf, at: f64 },
+}
+
+/// The song and the template for the new PMV: it begins at PMV time `start` (the moment the music segment
+/// starts). With the PMV's soundtrack the song is that from `start` on; with a song file it is the file from
+/// the matching moment (start − at), as far as the PMV goes. → (song, template in the song's time)
+pub fn with_music(
+    pmv: &Path,
+    tpl: &Template,
+    music: &Music,
+    start: f64,
+    rate: u32,
+    progress: &dyn Fn(f32),
+    cancel: &AtomicBool,
+) -> Result<(Song, Template)> {
+    let start = start.clamp(0.0, (tpl.duration - 1.0).max(0.0));
+    let song = match music {
+        Music::Pmv => song::load(pmv, start, None, rate, progress, cancel)?,
+        Music::File { path, at } => {
+            let from = start - at;
+            if from < -0.001 {
+                bail!(
+                    "The song only starts at {:.3} s of the PMV – the music can't start before that",
+                    at
+                );
+            }
+            let to = from + (tpl.duration - start).max(1.0);
+            song::load(path, from.max(0.0), Some(to), rate, progress, cancel)?
+        }
+    };
+    let mut t = tpl.shifted(start, song.duration());
+    t.name = tpl.name.clone();
+    Ok((song, t))
 }
 
 #[cfg(test)]
@@ -676,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn cuts_flashes_and_beats() {
+    fn classic_cuts_flashes_and_beats() {
         // 4 s at 20 fps: picture A, a cut to B at 1.0 s, a white flash at 2.0 s, back to B
         let a = pic(tex(1));
         let b = pic(tex(9));
@@ -698,7 +1113,7 @@ mod tests {
             frames.push(f);
         }
         let beats: Vec<f64> = (0..8).map(|i| i as f64 * 0.5 + 0.02).collect();
-        let tpl = build(&mut frames, &beats, 4.0, "x");
+        let tpl = build_classic(&mut frames, &beats, 4.0, "x");
         assert_eq!(tpl.stats.flashes, 1);
         let cut = tpl
             .events
@@ -710,5 +1125,51 @@ mod tests {
         assert!(tpl.events[0].is_layout());
         // sorted
         assert!(tpl.events.windows(2).all(|w| w[0].t() <= w[1].t()));
+    }
+
+    #[test]
+    fn cuts_flashes_exact_to_the_frame() {
+        // 4 s at 25 fps: picture A, a cut to B at frame 27 (1.08 s – between beats), a white flash at 2.0 s
+        let a = pic(tex(1));
+        let b = pic(tex(9));
+        let white = pic(|_, _| [255, 255, 255]);
+        let fps = 25.0;
+        let mut frames = Vec::new();
+        let mut prev: Option<Vec<f32>> = None;
+        for i in 0..100 {
+            let t = i as f64 / fps;
+            let px = if i < 27 {
+                &a
+            } else if (50..53).contains(&i) {
+                &white
+            } else {
+                &b
+            };
+            let (mut f, g) = measure(px, prev.as_deref());
+            f.t = t;
+            prev = Some(g);
+            frames.push(f);
+        }
+        let tpl = build_exact(&mut frames, &[27], fps, 4.0, "x");
+        assert_eq!(tpl.stats.flashes, 1);
+        let cut = tpl
+            .events
+            .iter()
+            .find(|e| matches!(e, TplEvent::Cut { .. }))
+            .expect("a cut");
+        // exactly at the frame, not moved to a beat
+        assert!((cut.t() - 27.0 / 25.0).abs() < 1e-9, "{}", cut.t());
+        assert!(tpl.events[0].is_layout());
+        assert!(tpl.events.windows(2).all(|w| w[0].t() <= w[1].t()));
+        // music starting 0.5 s into the PMV: everything 0.5 s earlier, a layout at 0
+        let sh = tpl.shifted(0.5, 3.0);
+        assert!(sh.events[0].is_layout() && sh.events[0].t() == 0.0);
+        let c2 = sh
+            .events
+            .iter()
+            .find(|e| matches!(e, TplEvent::Cut { .. }))
+            .unwrap();
+        assert!((c2.t() - (27.0 / 25.0 - 0.5)).abs() < 1e-9);
+        assert!(sh.events.iter().all(|e| e.t() >= 0.0 && e.t() < 3.0));
     }
 }

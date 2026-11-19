@@ -334,6 +334,7 @@ mod tests {
             sig: None,
             pinned: false,
             manual: true,
+            clean: None,
         };
         ProjectFile {
             pmvgen_project: 1,

@@ -52,7 +52,46 @@ pub struct Tpl {
     pub query: String,
     pub scan: Option<Job<(Song, Template)>>,
     pub name: String,
+    /// how the PMV is used: classic (follows the beat) or exact cuts – and how the current one was analysed
+    pub kind: crate::template::Kind,
+    pub scanned: crate::template::Kind,
+    /// what the show uses: the music and the template in the music's time
     pub result: Option<(Arc<Song>, Arc<Template>)>,
+    /// the PMV and its scan (its own music, the timeline in the PMV's time)
+    pub pmv: Option<PathBuf>,
+    pub raw: Option<(Arc<Song>, Arc<Template>)>,
+    /// the music chosen and the PMV time where the new PMV begins (where the music segment starts)
+    pub music: Option<crate::template::Music>,
+    pub start: f64,
+    /// how sure the song file's place in the PMV is
+    pub fit: Option<crate::align::Fit>,
+    /// the start as typed: time / frame
+    pub start_text: String,
+    pub frame_text: String,
+    /// applying a music choice / start (loading the song part, finding a song file's place)
+    pub load: Option<Job<TplMusicDone>>,
+}
+
+/// A music choice applied: the song, the template in its time, the music, the start, a song file's place
+pub type TplMusicDone = (
+    Song,
+    Template,
+    crate::template::Music,
+    f64,
+    Option<crate::align::Fit>,
+);
+
+impl Tpl {
+    /// The start as text fields show it
+    pub fn sync_text(&mut self) {
+        let fps = self.raw.as_ref().map(|r| r.1.fps).unwrap_or(0.0);
+        self.start_text = crate::util::fmt_ms(self.start);
+        self.frame_text = if fps > 0.0 {
+            format!("{}", (self.start * fps).round() as i64)
+        } else {
+            String::new()
+        };
+    }
 }
 
 /// A job in a thread: progress, cancel, result
@@ -702,17 +741,67 @@ impl App {
             if let Some(r) = t.take() {
                 self.tpl.scan = None;
                 match r {
+                    Ok((song, tpl)) if self.tpl.scanned == crate::template::Kind::Classic => {
+                        let mut tpl = tpl;
+                        tpl.name = self.tpl.name.clone();
+                        let song = Arc::new(song);
+                        let tpl = Arc::new(tpl);
+                        self.tpl.raw = Some((song.clone(), tpl.clone()));
+                        self.tpl.result = Some((song, tpl));
+                        self.tpl.music = None;
+                        self.tpl.start = 0.0;
+                        self.tpl.fit = None;
+                    }
                     Ok((song, tpl)) => {
                         let mut tpl = tpl;
                         tpl.name = self.tpl.name.clone();
-                        self.tpl.result = Some((Arc::new(song), Arc::new(tpl)));
+                        let song = Arc::new(song);
+                        let shown = tpl.shifted(0.0, song.duration());
+                        self.tpl.raw = Some((song.clone(), Arc::new(tpl)));
+                        self.tpl.result = Some((song, Arc::new(shown)));
+                        self.tpl.music = Some(crate::template::Music::Pmv);
+                        self.tpl.start = 0.0;
+                        self.tpl.fit = None;
+                        self.tpl.sync_text();
                     }
                     Err(e) if e == "Cancelled" => {}
                     Err(e) => self.toast(format!("Template: {e}"), false),
                 }
             }
         }
-        if self.gen.is_some() || self.opening.is_some() || self.tpl.scan.is_some() {
+        if let Some(t) = &self.tpl.load {
+            if let Some(r) = t.take() {
+                self.tpl.load = None;
+                match r {
+                    Ok((song, tpl, music, start, fit)) => {
+                        self.tpl.result = Some((Arc::new(song), Arc::new(tpl)));
+                        self.tpl.music = Some(music);
+                        self.tpl.start = start;
+                        if fit.is_some() {
+                            self.tpl.fit = fit;
+                        }
+                        if let Some(f) = fit.filter(|f| !f.good()) {
+                            self.toast(
+                                format!(
+                                    "The song was found at {} of the PMV, but not clearly ({} % of the PMV matches) – check the start",
+                                    crate::util::fmt_ms(f.offset.max(0.0)),
+                                    (f.agree * 100.0).round()
+                                ),
+                                false,
+                            );
+                        }
+                    }
+                    Err(e) if e == "Cancelled" => {}
+                    Err(e) => self.toast(format!("Music: {e}"), false),
+                }
+                self.tpl.sync_text();
+            }
+        }
+        if self.gen.is_some()
+            || self.opening.is_some()
+            || self.tpl.scan.is_some()
+            || self.tpl.load.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         // Start by itself: right after the song is read
@@ -742,8 +831,52 @@ impl App {
         let rate = self.device_rate;
         self.tpl.name = name;
         self.tpl.result = None;
+        self.tpl.raw = None;
+        self.tpl.pmv = Some(path.clone());
+        let kind = self.tpl.kind;
+        self.tpl.scanned = kind;
         self.tpl.scan = Some(Job::spawn(move |report, cancel| {
-            crate::template::scan(&path, rate, &|f, m| report(f, m.to_string()), cancel)
+            crate::template::scan(&path, rate, kind, &|f, m| report(f, m.to_string()), cancel)
+        }));
+    }
+
+    /// PMV as template: use this music, beginning at PMV time `start`. `find`: look for where the song file
+    /// plays in the PMV first (the start then follows it, unless the PMV starts in the middle of the song)
+    pub fn template_music(&mut self, music: crate::template::Music, start: f64, find: bool) {
+        let (Some(pmv), Some((_, raw))) = (self.tpl.pmv.clone(), self.tpl.raw.clone()) else {
+            return;
+        };
+        if let Some(j) = &self.tpl.load {
+            j.cancel.store(true, Ordering::SeqCst);
+        }
+        let rate = self.device_rate;
+        self.tpl.load = Some(Job::spawn(move |report, cancel| {
+            let mut music = music;
+            let mut start = start;
+            let mut fit = None;
+            if let crate::template::Music::File { path, at } = &mut music {
+                if find {
+                    report(0.05, "Finding the song in the PMV …".into());
+                    let f = crate::align::find(&pmv, path, cancel)?;
+                    *at = f.offset;
+                    // the new PMV begins where the song does – or at the PMV's start if it begins mid-song
+                    start = f.offset.max(0.0);
+                    fit = Some(f);
+                }
+                // (it can't begin before the song does)
+                start = start.max(*at);
+            }
+            report(0.3, "Reading the music …".into());
+            let (song, tpl) = crate::template::with_music(
+                &pmv,
+                &raw,
+                &music,
+                start,
+                rate,
+                &|p| report(0.3 + 0.7 * p, "Reading the music …".into()),
+                cancel,
+            )?;
+            Ok((song, tpl, music, start, fit))
         }));
     }
 
@@ -1166,6 +1299,12 @@ pub fn run(open: Vec<PathBuf>) -> anyhow::Result<()> {
         Box::new(move |cc| {
             let mut app = App::new(cc);
             app.open_paths(open);
+            // (developer screenshots: a template scanned right away)
+            if let Some(t) = std::env::var_os("PMVGEN_SHOT_TPL") {
+                let p = PathBuf::from(t);
+                let n = crate::song::song_name(&p);
+                app.scan_template(p, n);
+            }
             Ok(Box::new(app))
         }),
     )

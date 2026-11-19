@@ -89,6 +89,8 @@ pub struct Probe {
     pub has_audio: bool,
     pub channels: u32, // of the first audio stream
     pub still: bool,   // a single picture (image file or one-frame stream)
+    /// frames per second of the video stream (0 when unknown)
+    pub fps: f64,
 }
 
 /// Size (after rotation), duration, streams. Fails for files ffmpeg can't read.
@@ -134,6 +136,17 @@ pub fn probe(path: &Path) -> Result<Probe> {
                 if w == 0 || h == 0 {
                     continue;
                 }
+                let rate = |k: &str| {
+                    let v = s[k].as_str()?;
+                    let (a, b) = v.split_once('/').unwrap_or((v, "1"));
+                    let (a, b) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
+                    (a > 0.0 && b > 0.0)
+                        .then(|| a / b)
+                        .filter(|f| (1.0..=1000.0).contains(f))
+                };
+                pr.fps = rate("avg_frame_rate")
+                    .or_else(|| rate("r_frame_rate"))
+                    .unwrap_or(0.0);
                 // display aspect (non-square pixels)
                 if let Some(sar) = s["sample_aspect_ratio"].as_str() {
                     let mut it = sar.split(':');

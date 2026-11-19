@@ -105,6 +105,10 @@ pub struct Pick {
     /// chosen by hand (timeline / change the moment)
     #[serde(default)]
     pub manual: bool,
+    /// clean cuts: seconds of the clip from its start before its scene ends (the video cuts to another one);
+    /// None = not looked at
+    #[serde(default)]
+    pub clean: Option<f64>,
 }
 
 impl Pick {
@@ -140,6 +144,7 @@ impl Pick {
             sig: None,
             pinned: false,
             manual: false,
+            clean: None,
         }
     }
     /// The same clip from another moment (change the moment); measured again only when asked
@@ -148,8 +153,9 @@ impl Pick {
         if p.kind == Kind::Video {
             p.start = start.clamp(0.0, (p.dur - 0.6).max(0.0));
             p.end_at = (p.dur - 0.4 > p.start + 0.5).then_some(p.dur - 0.4);
-            // (the rhythm measured at the old spot doesn't hold here)
+            // (the rhythm and the scene measured at the old spot don't hold here)
             p.beat = None;
+            p.clean = None;
         }
         p.manual = true;
         p
@@ -540,6 +546,8 @@ pub struct Media {
     pins: HashMap<PathBuf, Vec<f64>>,
     pace: Option<Arc<PaceInfo>>,
     hook: Mutex<Option<AssignHook>>,
+    /// clean cuts: how long (clip seconds) a clip should run on in one scene – most shots of the plan fit
+    clean_need: f64,
 }
 
 impl Media {
@@ -562,6 +570,19 @@ impl Media {
         let mut picks = o.picks.unwrap_or_default();
         picks.resize(plan.shots.len(), None);
         let song_dur = plan.duration;
+        let clean_need = {
+            let mut d: Vec<f64> = plan
+                .shots
+                .iter()
+                .map(|sh| plan.shot_clock(sh, sh.t_off))
+                .filter(|d| d.is_finite() && *d > 0.0)
+                .collect();
+            d.sort_by(|a, b| cmp_f64(*a, *b));
+            d.get(d.len() * 3 / 4)
+                .copied()
+                .unwrap_or(3.0)
+                .clamp(1.5, 10.0)
+        };
         Arc::new(Media {
             s: s.clone(),
             plan,
@@ -603,6 +624,7 @@ impl Media {
             pins: o.pins,
             pace: o.pace,
             hook: Mutex::new(None),
+            clean_need,
         })
     }
 
@@ -982,79 +1004,61 @@ impl Media {
             start = t;
             spd = Some(sp);
         } else if self.s.best_spots && dur > 10.0 {
-            // Several random spots, two frames each for motion; big videos and a low supply look at fewer
+            // Several random spots, two frames each for motion; a low supply looks at fewer
             let big = (it.w as u64 * it.h as u64) > 2560 * 1440;
             let urgent = (ready_n < 2 && !self.export && self.decode) || big;
             let n = if urgent { 2 } else { 4 };
-            let clean = self.s.clean_cuts && !urgent;
-            let span = if clean {
-                (if self.bpm > 0.0 {
-                    4.0 * 60.0 / self.bpm
-                } else {
-                    2.5
-                })
-                .clamp(1.5, 4.0)
-            } else {
-                0.0
-            };
-            let mut cands: Vec<(f64, bool)> =
-                (0..n).map(|_| (fresh_rand(&mut rng), false)).collect();
-            if clean {
-                for _ in 0..4 {
-                    cands.push((fresh_rand(&mut rng), true));
-                }
-            }
-            let mut best = f64::NEG_INFINITY;
-            let mut any_clean = false;
-            for (c, extra) in cands {
+            let mut scored: Vec<(f64, f64, Sig, f64)> = Vec::new();
+            for _ in 0..n {
                 if self.stopped() {
                     break;
                 }
-                if extra && any_clean {
-                    break;
-                }
-                let t0 = if clean {
-                    c.min((dur - span - 0.5).max(0.0))
-                } else {
-                    c
-                };
-                let times: Vec<f64> = if clean {
-                    vec![0.0, 0.35, span * 0.45, span * 0.8]
-                } else {
-                    vec![0.0, 0.35]
-                };
-                let sigs = tiny_frames(&it.path, it.w, it.h, t0, &times);
+                let c = fresh_rand(&mut rng);
+                let sigs = tiny_frames(&it.path, it.w, it.h, c, &[0.0, 0.35]);
                 if sigs.len() < 2 {
                     continue;
                 }
                 let (a, b) = (&sigs[0], &sigs[1]);
-                let mut cut = clean && smart::is_cut(a, b);
-                if clean && !cut {
-                    // a few more looks along the stretch
-                    let mut prev = b;
-                    for x in &sigs[2..] {
-                        if smart::is_cut(prev, x) {
-                            cut = true;
-                            break;
-                        }
-                        prev = x;
-                    }
-                }
-                if clean && !cut {
-                    any_clean = true;
-                }
-                // motion counts, but a "motion" that is a cut isn't one
+                // (a "motion" that is a cut isn't one)
+                let cut = smart::is_cut(a, b);
                 let sc = if cut {
                     smart::spot_score(a, a, 0.0) - 5.0
                 } else {
                     smart::spot_score(a, b, 0.0)
                 };
-                if sc > best {
-                    best = sc;
-                    start = t0;
-                    info = Some(a.clone());
-                    mo = Some(if cut { 0.0 } else { smart::motion(a, b) });
+                scored.push((
+                    sc,
+                    c,
+                    a.clone(),
+                    if cut { 0.0 } else { smart::motion(a, b) },
+                ));
+            }
+            scored.sort_by(|x, y| cmp_f64(y.0, x.0));
+            if let Some((_, c, sig, m)) = scored.first().cloned() {
+                start = c;
+                info = Some(sig);
+                mo = Some(m);
+            }
+        }
+        // Clean cuts: the clip starts where its scene runs on long enough for most shots – found by looking at
+        // every frame around the spot (shots.rs). A pinned moment stays; the others move into their scene.
+        let mut clean: Option<f64> = None;
+        let mut clean_start = start;
+        // (not while a live show is about to run out of clips – they're needed fast then)
+        let low_supply = ready_n < 2 && !self.export && self.decode;
+        if self.s.clean_cuts && !low_supply && !self.stopped() && dur > 2.0 {
+            let lo = head.min(dur - 1.0).max(0.0);
+            let hi = (dur - tail - 0.3).max(lo + 0.5);
+            if let Some((s2, len)) = self.fit_in_scene(&it, start, lo, hi, !pinned) {
+                if (s2 - start).abs() > 0.05 {
+                    // (measured again where it starts now)
+                    info = None;
+                    mo = None;
+                    spd = None;
                 }
+                start = s2;
+                clean = Some(len);
+                clean_start = s2;
             }
         }
         self.use_spot(it.id, start);
@@ -1150,12 +1154,77 @@ impl Media {
         }
         let end_at = (dur - 0.4 > start + 0.5).then_some(dur - 0.4);
         let mut p = Pick::from_item(&it, start, end_at, 0.0);
+        // (motion on the beat may have moved the start a little later into the scene)
+        p.clean = clean.map(|c| (c - (start - clean_start)).max(0.0));
         p.sig = lean(info);
         p.motion = mo;
         p.speed = spd;
         p.beat = beat;
         p.pinned = pinned;
         Ok(p)
+    }
+
+    /// Clean cuts: the scene around `want` (video seconds, between lo and hi). With `may_move`, the start moves
+    /// so the clip runs on in one scene for `clean_need` seconds (the nearest scene that is long enough, else
+    /// the longest). → (start, seconds until the scene ends)
+    fn fit_in_scene(
+        &self,
+        it: &Item,
+        want: f64,
+        lo: f64,
+        hi: f64,
+        may_move: bool,
+    ) -> Option<(f64, f64)> {
+        let need = self.clean_need;
+        let margin = 0.08;
+        let stop = AtomicBool::new(false);
+        // the scenes between a and b (every frame through the network too: a few seconds cost a second or two)
+        let scenes = |a: f64, b: f64| -> Option<Vec<(f64, f64)>> {
+            if b - a < 0.5 {
+                return None;
+            }
+            let tr =
+                crate::shots::decode(&it.path, a, Some(b - a), 25.0, None, &|_| {}, &stop).ok()?;
+            if tr.len() < 4 {
+                return None;
+            }
+            let cuts = crate::shots::detect(&tr, crate::shots::NetUse::Always, &stop);
+            Some(crate::shots::shots_of(&tr, &cuts))
+        };
+        // 1. just the stretch the clip needs: most spots are in a scene that runs on long enough
+        // (where a window stops the scene may go on – it counts as ending there: the safe side)
+        let end1 = (want + need + 0.6).min(hi.max(want + 0.5));
+        let first = scenes((want - 0.3).max(0.0), end1)?;
+        let here = first
+            .iter()
+            .find(|(s0, s1)| want >= *s0 - 0.05 && want < *s1)
+            .map(|s| (s.1 - want - margin).max(0.0));
+        if !may_move || here.is_some_and(|l| l >= need) || end1 >= hi && here.is_some() {
+            return here.map(|l| (want, l));
+        }
+        // 2. a cut too soon: the nearest scene around that is long enough (else the longest)
+        let a = (want - need).max(lo);
+        let b = (want + need * 1.6 + 0.5).min(hi.max(want + 0.5));
+        let wide = scenes(a, b)?;
+        let mut best: Option<(f64, f64, f64)> = None; // (distance, start, length)
+        let mut longest: Option<(f64, f64)> = None;
+        for &(s0, s1) in &wide {
+            let (s0, s1) = (s0 + margin, s1 - margin);
+            if s1 - s0 <= 0.3 {
+                continue;
+            }
+            if longest.is_none_or(|l| s1 - s0 > l.1) {
+                longest = Some((s0, s1 - s0));
+            }
+            if s1 - s0 >= need {
+                let st = want.clamp(s0, s1 - need);
+                let d = (st - want).abs();
+                if best.is_none_or(|b| d < b.0) {
+                    best = Some((d, st, s1 - st));
+                }
+            }
+        }
+        best.map(|b| (b.1, b.2)).or(longest)
     }
 
     fn use_spot(&self, id: usize, t: f64) {
@@ -1288,6 +1357,15 @@ impl Media {
             }
             if self.s.variety && p.recent.contains(&id) {
                 sc += 3.0;
+            }
+            // clean cuts: a clip whose scene ends before the shot does would show that cut – others first
+            if self.s.clean_cuts {
+                if let Some(c) = p.ready[i].pick.clean {
+                    let need = self.plan.shot_clock(shot, shot.t_off) * p.ready[i].pick.tempo();
+                    if c + 0.05 < need {
+                        sc += 4.0 + 4.0 * ((need - c) / need.max(0.1)).min(1.0);
+                    }
+                }
             }
             if sc < score {
                 score = sc;

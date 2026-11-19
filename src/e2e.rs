@@ -207,6 +207,13 @@ fn generate_save_swap_render_template() {
     assert!(!dir.join("c.mp4").exists());
 
     // the rendered PMV as a template: its cuts are found
-    let (_, tpl) = crate::template::scan(&a, 44100, &|_, _| {}, &cancel).expect("template");
+    let (_, tpl) = crate::template::scan(
+        &a,
+        44100,
+        crate::template::Kind::Classic,
+        &|_, _| {},
+        &cancel,
+    )
+    .expect("template");
     assert!(tpl.stats.cuts >= 3, "{:?}", tpl.stats);
 }
