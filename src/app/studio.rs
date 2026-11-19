@@ -840,7 +840,11 @@ impl Studio {
                     .color(c().text),
             );
             ui.separator();
-            ui.label(egui::RichText::new("Zoom").font(medium(13.0)).color(c().text2));
+            ui.label(
+                egui::RichText::new("Zoom")
+                    .font(medium(13.0))
+                    .color(c().text2),
+            );
             ui.add(
                 egui::Slider::new(&mut self.zoom, 1.0..=60.0)
                     .logarithmic(true)
@@ -977,11 +981,7 @@ impl Studio {
                 Pos2::new(a.max(rect.left()), band.top()),
                 Pos2::new(b.min(rect.right()) - 1.0, band.bottom()),
             );
-            p.rect_filled(
-                r,
-                2.0,
-                super::themes::rgba(lc[0], lc[1], lc[2], 200),
-            );
+            p.rect_filled(r, 2.0, super::themes::rgba(lc[0], lc[1], lc[2], 200));
             if r.width() > 60.0 {
                 // (dark text on light colours, light on dark)
                 let lum = 0.299 * lc[0] as f32 + 0.587 * lc[1] as f32 + 0.114 * lc[2] as f32;
@@ -1038,8 +1038,12 @@ impl Studio {
                             Color32::WHITE,
                         );
                         if r.width() > tw + 40.0 {
-                            let g =
-                                p.layout(pk.name.clone(), text(11.5), c().text, r.width() - tw - 10.0);
+                            let g = p.layout(
+                                pk.name.clone(),
+                                text(11.5),
+                                c().text,
+                                r.width() - tw - 10.0,
+                            );
                             p.with_clip_rect(r).galley(
                                 Pos2::new(tr.right() + 4.0, r.top() + 3.0),
                                 g,
@@ -1244,7 +1248,11 @@ impl Studio {
                         .font(display(20.0))
                         .color(c().text),
                 );
-                ui.label(egui::RichText::new(&p.msg).font(medium(13.5)).color(c().text2));
+                ui.label(
+                    egui::RichText::new(&p.msg)
+                        .font(medium(13.5))
+                        .color(c().text2),
+                );
                 progress_bar(ui, p.frac);
                 let el = e.started.elapsed().as_secs_f64();
                 hint(
@@ -1274,7 +1282,11 @@ impl Studio {
             });
         } else if let Some(p) = self.last_export.clone() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Saved:").font(medium(13.0)).color(c().ok));
+                ui.label(
+                    egui::RichText::new("Saved:")
+                        .font(medium(13.0))
+                        .color(c().ok),
+                );
                 ui.label(
                     egui::RichText::new(
                         p.file_name()

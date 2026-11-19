@@ -659,7 +659,11 @@ impl Settings {
             d.export_crf
         };
         pick(&mut self.codec, &CODECS.map(|c| c.0), &d.codec);
-        pick(&mut self.theme, &crate::app::themes::THEMES.map(|t| t.0), &d.theme);
+        pick(
+            &mut self.theme,
+            &crate::app::themes::THEMES.map(|t| t.0),
+            &d.theme,
+        );
         pick(&mut self.encoder, &ENCODERS.map(|c| c.0), &d.encoder);
         pick(&mut self.enc_speed, &ENC_SPEEDS.map(|c| c.0), &d.enc_speed);
         // numbers from hand-edited files: finite and in range

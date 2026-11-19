@@ -5,8 +5,8 @@ mod live;
 mod setup;
 mod stage;
 mod studio;
-pub mod themes;
 pub mod theme;
+pub mod themes;
 
 use crate::library::{self, Item, Kind};
 use crate::player;
@@ -878,8 +878,15 @@ impl App {
             .show(ctx, |ui| {
                 for (i, t) in self.toasts.iter().enumerate() {
                     let r = egui::Frame::new()
-                        .fill(if glass() { alpha(c().bg2, 0.92) } else { c().bg2 })
-                        .stroke(egui::Stroke::new(1.0_f32, if t.ok { c().bg3 } else { c().danger }))
+                        .fill(if glass() {
+                            alpha(c().bg2, 0.92)
+                        } else {
+                            c().bg2
+                        })
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            if t.ok { c().bg3 } else { c().danger },
+                        ))
                         .corner_radius(if glass() { 255 } else { 6 })
                         .inner_margin(egui::Margin::symmetric(16, 10))
                         .shadow(egui::Shadow {

@@ -506,8 +506,12 @@ pub fn moments_ui(
                     .font(display(18.0))
                     .color(c().accent),
             );
-            ui.label(egui::RichText::new(&pick.name).font(bold(14.0)).color(c().text))
-                .on_hover_text(pick.path.to_string_lossy());
+            ui.label(
+                egui::RichText::new(&pick.name)
+                    .font(bold(14.0))
+                    .color(c().text),
+            )
+            .on_hover_text(pick.path.to_string_lossy());
         });
         if pick.kind == Kind::Image {
             hint(ui, "A picture – no moment to change");
@@ -589,7 +593,11 @@ pub fn moments_ui(
         });
         if !pins.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Pinned:").font(text(12.5)).color(c().faint));
+                ui.label(
+                    egui::RichText::new("Pinned:")
+                        .font(text(12.5))
+                        .color(c().faint),
+                );
                 for x in &pins {
                     if chip(ui, &fmt_at(*x), false, None)
                         .on_hover_text("Take the clip from here")

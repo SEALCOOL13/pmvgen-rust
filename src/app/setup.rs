@@ -1,6 +1,7 @@
 // The setup page: 1 Music · 2 Clips · 3 Style (sections) · 4 Go – the web version's layout, labels and hints.
 
 use super::theme::*;
+use super::themes::mix;
 use super::{template_candidates, App, Load, Mode, Screen};
 use crate::library::{self, Kind};
 use crate::plan::LAYOUTS;
@@ -285,7 +286,7 @@ pub fn page(ctx: &egui::Context, app: &mut App) {
                                 music_card(ui, app);
                                 clips_card(ui, app);
                                 style_card(ui, app);
-                                ui.add_space(24.0);
+                                ui.add_space(17.0);
                             });
                         });
                     });
@@ -305,7 +306,11 @@ pub fn page(ctx: &egui::Context, app: &mut App) {
             .unwrap_or(inner.top() + 120.0)
             .max(inner.top() + 16.0);
         // (a whole-page developer screenshot: the card scrolls with the page instead of sticking)
-        let y = if app.shot_long { row_top.unwrap_or(y) } else { y };
+        let y = if app.shot_long {
+            row_top.unwrap_or(y)
+        } else {
+            y
+        };
         egui::Area::new(egui::Id::new("go-card"))
             .constrain(!app.shot_long)
             .fixed_pos(Pos2::new(x, y))
@@ -333,12 +338,19 @@ fn top_bar(ui: &mut Ui, app: &mut App) {
                 .color(c().text),
         );
         // "Runs locally – no uploads"
-        let g =
-            ui.painter()
-                .layout_no_wrap("Runs locally – no uploads".into(), medium(12.5), c().text2);
+        let g = ui.painter().layout_no_wrap(
+            "Runs locally – no uploads".into(),
+            medium(12.5),
+            c().text2,
+        );
         let (r, resp) = ui.allocate_exact_size(Vec2::new(g.size().x + 40.0, 26.0), Sense::hover());
         let p = ui.painter();
-        p.rect_stroke(r, 255, Stroke::new(1.0_f32, c().bg3), egui::StrokeKind::Inside);
+        p.rect_stroke(
+            r,
+            255,
+            Stroke::new(1.0_f32, c().bg3),
+            egui::StrokeKind::Inside,
+        );
         icon(
             p,
             Rect::from_center_size(Pos2::new(r.left() + 17.0, r.center().y), Vec2::splat(14.0)),
@@ -385,7 +397,7 @@ fn header(ui: &mut Ui, app: &mut App) {
     let size = (ui.ctx().screen_rect().width() * 0.048).clamp(36.0, 62.0);
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            ui.set_width((w - 150.0).max(200.0));
+            ui.set_width((w - 400.0).max(200.0));
             ui.label(egui::RichText::new("PMV Generator").font(display(size)).color(c().text));
             ui.add(
                 egui::Label::new(
@@ -919,40 +931,32 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
         };
         if n_items == 0 && roots.is_empty() {
             let over = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
-            if drop_zone(
+            let (zone, link) = drop_zone_link(
                 ui,
+                130.0,
                 Icon::Folder,
                 "Drop folders with videos and images here",
-                "or click to choose a folder · nothing is uploaded",
+                (
+                    "or click to choose a folder · ",
+                    "pick single files",
+                    " · nothing is uploaded",
+                ),
                 over,
                 false,
-            )
-            .clicked()
-            {
+            );
+            if link {
+                app.add_files_dialog();
+            } else if zone.clicked() {
                 app.add_folder_dialog();
             }
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("or").font(text(13.0)).color(c().faint));
-                if ui
-                    .add(
-                        egui::Label::new(
-                            egui::RichText::new("pick single files")
-                                .font(text(13.0))
-                                .color(c().accent)
-                                .underline(),
-                        )
-                        .sense(Sense::click()),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    app.add_files_dialog();
-                }
-            });
         } else {
             // the library bar (.kb-pmvg-libbar)
             egui::Frame::new()
-                .fill(if glass() { alpha(c().bg2, 0.5) } else { c().base })
+                .fill(if glass() {
+                    alpha(c().bg2, 0.5)
+                } else {
+                    c().base
+                })
                 .stroke(Stroke::new(
                     1.0_f32,
                     if glass() { glass_edge() } else { c().bg3 },
@@ -1002,6 +1006,7 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
         // What · Clip shape | Folders
         let cols = ui.available_width() >= 640.0;
         let what = |ui: &mut Ui, s: &mut Settings| {
+            ui.spacing_mut().item_spacing.y = 5.0;
             lab(ui, "What", "");
             seg(
                 ui,
@@ -1026,6 +1031,7 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
         let lib = app.lib.clone();
         let folder_q = &mut app.ui.folder_q;
         let mut folders = |ui: &mut Ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
             lab(ui, "Folders", "including subfolders");
             let mut l = lib.lk();
             let on = l.roots.iter().filter(|r| !l.off.contains(*r)).count();
@@ -1037,45 +1043,124 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
                     "Only the folders ticked"
                 },
             );
-            if l.roots.is_empty() {
-                hint(ui, "Add clips above – their folders show up here");
-                return;
-            }
-            if l.roots.len() > 6 {
-                field(ui, folder_q, "Search folders …", ui.available_width());
-            }
+            field(ui, folder_q, "Search folders …", ui.available_width());
             let q = folder_q.to_lowercase();
             let mut toggle = None;
             let mut remove = None;
-            egui::ScrollArea::vertical()
-                .id_salt("folders")
-                .max_height(220.0)
+            // the picker (.kb-fpick): a bordered box with the folders, or the hint while there are none
+            let g = glass();
+            let counts: std::collections::HashMap<PathBuf, usize> =
+                l.items.iter().fold(Default::default(), |mut m, i| {
+                    *m.entry(i.root.clone()).or_default() += 1;
+                    m
+                });
+            egui::Frame::new()
+                .fill(if g {
+                    alpha(c().base, 0.42 * 0.9)
+                } else {
+                    c().base
+                })
+                .stroke(Stroke::new(1.0_f32, if g { glass_edge() } else { c().bg3 }))
+                .corner_radius(if g { 14 } else { 4 })
+                .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
-                    for r in l.roots.iter() {
-                        let s = r.to_string_lossy().to_string();
-                        if !q.is_empty() && !s.to_lowercase().contains(&q) {
-                            continue;
-                        }
-                        let mut on = !l.off.contains(r);
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut on, "").changed() {
-                                toggle = Some(r.clone());
-                            }
-                            let n = r
-                                .file_name()
-                                .map(|x| x.to_string_lossy().to_string())
-                                .unwrap_or(s.clone());
-                            ui.label(egui::RichText::new(n).font(medium(13.5)).color(if on {
-                                c().text
-                            } else {
-                                c().faint
-                            }))
-                            .on_hover_text(&s);
-                            if x_btn(ui, "Remove this folder").clicked() {
-                                remove = Some(r.clone());
+                    ui.set_width(ui.available_width());
+                    if l.roots.is_empty() {
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                hint(ui, "Add clips above – their folders show up here")
+                            });
+                        return;
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("folders")
+                        .max_height(228.0)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for r in l.roots.iter() {
+                                let s = r.to_string_lossy().to_string();
+                                if !q.is_empty() && !s.to_lowercase().contains(&q) {
+                                    continue;
+                                }
+                                let is_on = !l.off.contains(r);
+                                let w = ui.available_width();
+                                let (row, resp) =
+                                    ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click());
+                                let h = anim(ui, resp.id.with("h"), resp.hovered(), 0.12);
+                                let p = ui.painter();
+                                if h > 0.0 {
+                                    p.rect_filled(row, 4.0, alpha(c().bg2, h));
+                                }
+                                // the box: 15 px, accent and a check when on
+                                let bx = Rect::from_center_size(
+                                    Pos2::new(row.left() + 16.0, row.center().y),
+                                    Vec2::splat(15.0),
+                                );
+                                if is_on {
+                                    p.rect_filled(bx, 3.0, c().accent);
+                                    icon(p, bx.shrink(1.5), Icon::Check, c().on_accent);
+                                } else {
+                                    p.rect_stroke(
+                                        bx,
+                                        3.0,
+                                        Stroke::new(1.5_f32, c().faint),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                let n = r
+                                    .file_name()
+                                    .map(|x| x.to_string_lossy().to_string())
+                                    .unwrap_or(s.clone());
+                                let cnt = counts.get(r).copied().unwrap_or(0).to_string();
+                                let cg = p.layout_no_wrap(cnt, text(11.5), c().faint);
+                                let xr = Rect::from_center_size(
+                                    Pos2::new(row.right() - 16.0, row.center().y),
+                                    Vec2::splat(20.0),
+                                );
+                                let name_w = (row.width() - 34.0 - cg.size().x - 44.0).max(20.0);
+                                let ng = p.layout(
+                                    n,
+                                    text(14.0),
+                                    if is_on { c().text } else { c().text2 },
+                                    name_w,
+                                );
+                                let ng_h = ng.size().y.min(20.0);
+                                p.with_clip_rect(Rect::from_min_size(
+                                    Pos2::new(row.left() + 32.0, row.top()),
+                                    Vec2::new(name_w, row.height()),
+                                ))
+                                .galley(
+                                    Pos2::new(row.left() + 32.0, row.center().y - ng_h / 2.0),
+                                    ng,
+                                    c().text,
+                                );
+                                p.galley(
+                                    Pos2::new(
+                                        xr.left() - 8.0 - cg.size().x,
+                                        row.center().y - cg.size().y / 2.0,
+                                    ),
+                                    cg,
+                                    c().faint,
+                                );
+                                let xresp = ui.interact(xr, resp.id.with("x"), Sense::click());
+                                let xh = anim(ui, xresp.id.with("h"), xresp.hovered(), 0.12);
+                                if xh > 0.0 {
+                                    ui.painter().rect_filled(xr, 4.0, alpha(c().bg3, xh));
+                                }
+                                icon(
+                                    ui.painter(),
+                                    xr.shrink(4.0),
+                                    Icon::Close,
+                                    mix(c().faint, c().text, xh),
+                                );
+                                if xresp.on_hover_text("Remove this folder").clicked() {
+                                    remove = Some(r.clone());
+                                } else if resp.on_hover_text(&s).clicked() {
+                                    toggle = Some(r.clone());
+                                }
                             }
                         });
-                    }
                 });
             if let Some(r) = toggle {
                 if !l.off.remove(&r) {
@@ -1095,7 +1180,10 @@ fn clips_card(ui: &mut Ui, app: &mut App) {
             what(ui, &mut app.s);
             folders(ui);
         }
-        {
+        if n_items == 0 {
+            // (the empty count line still takes its gaps in the original)
+            ui.add_space(17.0);
+        } else {
             let (v, i, _) = app.lib.lk().count(&app.s);
             hint(
                 ui,
@@ -1168,8 +1256,12 @@ fn per_video(ui: &mut Ui, app: &mut App) {
                 icon(ui.painter(), r.shrink(2.0), Icon::Play, c().accent2);
             }
             ui.add(
-                egui::Label::new(egui::RichText::new(&title).font(medium(13.5)).color(c().accent2))
-                    .sense(Sense::click()),
+                egui::Label::new(
+                    egui::RichText::new(&title)
+                        .font(medium(13.5))
+                        .color(c().accent2),
+                )
+                .sense(Sense::click()),
             )
         })
         .inner
@@ -1215,7 +1307,11 @@ fn per_video(ui: &mut Ui, app: &mut App) {
                 .spacing([10.0, 6.0])
                 .striped(true)
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Video").font(medium(12.5)).color(c().faint));
+                    ui.label(
+                        egui::RichText::new("Video")
+                            .font(medium(12.5))
+                            .color(c().faint),
+                    );
                     ui.label(
                         egui::RichText::new("Length")
                             .font(medium(12.5))
@@ -1327,14 +1423,24 @@ fn style_card(ui: &mut Ui, app: &mut App) {
         if app.mode == Mode::Template {
             tip(ui, "Template active: cuts, layouts and flashes come from the PMV. Here you choose the effects that are added at those moments.");
         }
-        lab(ui, "Mood", "sets cutting, layouts and effects in one go");
-        ui.horizontal_wrapped(|ui| {
-            for p in PRESETS.iter() {
-                if chip(ui, p.name, false, None).clicked() {
-                    app.s.apply_mood(p);
+        // .kb-pmvg-presets: 16 px down, a line, 14 px, then the label and the chips 8 px apart
+        ui.add_space(16.0 - 8.0);
+        let (line, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter().rect_filled(line, 0.0, c().line);
+        ui.add_space(14.0 - 8.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            lab(ui, "Mood", "sets cutting, layouts and effects in one go");
+            ui.horizontal_wrapped(|ui| {
+                for p in PRESETS.iter() {
+                    if chip(ui, p.name, false, None).clicked() {
+                        app.s.apply_mood(p);
+                    }
                 }
-            }
+            });
         });
+        ui.add_space(4.0);
         let all_closed = SECTIONS
             .iter()
             .all(|s| !*app.ui.open.get(s.0).unwrap_or(&true));
@@ -1346,7 +1452,19 @@ fn style_card(ui: &mut Ui, app: &mut App) {
                 } else {
                     "Collapse all"
                 };
-                if btn(ui, Btn::Ghost, Some(Icon::Chevron), label, true).clicked() {
+                if btn(
+                    ui,
+                    Btn::Normal,
+                    Some(if all_closed {
+                        Icon::Chevron
+                    } else {
+                        Icon::ChevronUp
+                    }),
+                    label,
+                    true,
+                )
+                .clicked()
+                {
                     for s in SECTIONS {
                         app.ui.open.insert(s.0, all_closed);
                     }
@@ -1380,31 +1498,35 @@ fn sec_cut(ui: &mut Ui, app: &mut App) {
     ui.add_enabled_ui(!tpl, |ui| {
         let opts: Vec<(String, &str, &str)> =
             CUTS.iter().map(|c| (c.0.to_string(), c.1, c.2)).collect();
-        seg(ui, &mut s.cut, &opts);
+        seg_full(ui, &mut s.cut, &opts);
     });
     if s.cut == "auto" {
-        lab(ui, "Pace", "how fast “Automatic” cuts");
-        seg(
-            ui,
-            &mut s.pace,
-            &[
-                (
-                    "slow".to_string(),
-                    "Slow",
-                    "Calm: every 8 beats · medium: every 4 · loud: every 2",
-                ),
-                (
-                    "normal".into(),
-                    "Normal",
-                    "Calm: every 4 beats · medium: every 2 · loud: every beat",
-                ),
-                (
-                    "fast".into(),
-                    "Fast",
-                    "Calm: every 2 beats · medium and loud: every beat",
-                ),
-            ],
-        );
+        // (the pace box is a block: label and seg sit on one line)
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            lab(ui, "Pace", "how fast “Automatic” cuts");
+            seg(
+                ui,
+                &mut s.pace,
+                &[
+                    (
+                        "slow".to_string(),
+                        "Slow",
+                        "Calm: every 8 beats · medium: every 4 · loud: every 2",
+                    ),
+                    (
+                        "normal".into(),
+                        "Normal",
+                        "Calm: every 4 beats · medium: every 2 · loud: every beat",
+                    ),
+                    (
+                        "fast".into(),
+                        "Fast",
+                        "Calm: every 2 beats · medium and loud: every beat",
+                    ),
+                ],
+            );
+        });
     }
     opts_grid(ui, 4, |ui, i| match i {
         0 => {
@@ -1486,6 +1608,8 @@ fn sec_cut(ui: &mut Ui, app: &mut App) {
         });
     });
     lab(ui, "Clip shape per layout", "e.g. landscape clips only in full screen, portrait only in 3-way (set “Clip shape” in What to “All”)");
+    // (.kb-pmvg-lshape: rows 6 px apart, 6 px down; the select on the right)
+    ui.add_space(6.0 - 8.0 + 6.0);
     for l in LAYOUTS.iter() {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::new(24.0, 15.0), Sense::hover());
@@ -1508,7 +1632,8 @@ fn sec_cut(ui: &mut Ui, app: &mut App) {
                 ("landscape".into(), "Landscape only".into()),
                 ("portrait".into(), "Portrait only".into()),
             ];
-            if select(ui, ("ls", l.id), &mut v, &opts, 170.0) {
+            ui.add_space((ui.available_width() - 150.0).max(0.0));
+            if select(ui, ("ls", l.id), &mut v, &opts, 150.0) {
                 if v == "all" {
                     s.layout_shape.remove(l.id);
                 } else {
@@ -1518,7 +1643,7 @@ fn sec_cut(ui: &mut Ui, app: &mut App) {
         });
     }
     lab(ui, "Fields in 2-/3-way layouts", "");
-    seg(
+    seg_full(
         ui,
         &mut s.split,
         &[
@@ -1566,7 +1691,7 @@ fn sec_fx(ui: &mut Ui, app: &mut App) {
         5.0,
         &pct,
     );
-    seg(
+    seg_full(
         ui,
         &mut s.pulse_on,
         &[
@@ -1580,21 +1705,16 @@ fn sec_fx(ui: &mut Ui, app: &mut App) {
         ],
     );
     for (name, sub, keys) in FX_GROUPS {
-        ui.horizontal(|ui| {
-            group_head(ui, name, sub);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if btn(ui, Btn::Ghost, None, "All on", true).clicked() {
-                    for k in keys {
-                        *s.fx.get_mut(k) = true;
-                    }
-                }
-            });
-        });
+        if group_head_btn(ui, name, sub, Some("All on")) {
+            for k in keys {
+                *s.fx.get_mut(k) = true;
+            }
+        }
         opts_grid(ui, keys.len(), |ui, i| {
             let (n, d) = fx_text(keys[i]);
             opt(ui, s.fx.get_mut(keys[i]), n, d);
         });
-        if keys.contains(&"text") {
+        if keys.contains(&"text") && s.fx.text {
             let w = ui.available_width();
             field(
                 ui,
@@ -1618,40 +1738,45 @@ fn sec_pics(ui: &mut Ui, s: &mut Settings) {
         );
     });
     ui.add_enabled_ui(s.pic_flash, |ui| {
-        lab(ui, "Speed", "pictures per beat");
-        seg(
-            ui,
-            &mut s.pic_flash_rate,
-            &[
-                (
-                    "auto".to_string(),
-                    "Follow the song",
-                    "Calm parts one per beat, louder parts two, loud parts four",
-                ),
-                ("1".into(), "1", ""),
-                ("2".into(), "2", ""),
-                ("4".into(), "4", ""),
-                ("8".into(), "8", ""),
-            ],
-        );
-        lab(ui, "How", "");
-        seg(
-            ui,
-            &mut s.pic_flash_mode,
-            &[
-                (
-                    "single".to_string(),
-                    "One picture",
-                    "One picture, as long as one step of the speed above",
-                ),
-                (
-                    "burst".into(),
-                    "A burst",
-                    "Several pictures in a row, as many as fit in the burst length",
-                ),
-                ("both".into(), "Both", ""),
-            ],
-        );
+        // (the flash box is a block: Speed · seg · How · seg flow on one line)
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            lab(ui, "Speed", "pictures per beat");
+            seg(
+                ui,
+                &mut s.pic_flash_rate,
+                &[
+                    (
+                        "auto".to_string(),
+                        "Follow the song",
+                        "Calm parts one per beat, louder parts two, loud parts four",
+                    ),
+                    ("1".into(), "1", ""),
+                    ("2".into(), "2", ""),
+                    ("4".into(), "4", ""),
+                    ("8".into(), "8", ""),
+                ],
+            );
+            ui.add_space(4.0);
+            lab(ui, "How", "");
+            seg(
+                ui,
+                &mut s.pic_flash_mode,
+                &[
+                    (
+                        "single".to_string(),
+                        "One picture",
+                        "One picture, as long as one step of the speed above",
+                    ),
+                    (
+                        "burst".into(),
+                        "A burst",
+                        "Several pictures in a row, as many as fit in the burst length",
+                    ),
+                    ("both".into(), "Both", ""),
+                ],
+            );
+        });
         range(
             ui,
             Icon::Sliders,
@@ -1724,6 +1849,8 @@ fn look_seg(ui: &mut Ui, s: &mut Settings) {
         .corner_radius(if g { 255 } else { 4 })
         .inner_margin(egui::Margin::same(2))
         .show(ui, |ui| {
+            // (straight inside its group: as wide as the group)
+            ui.set_min_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
                 for (v, l) in LOOKS {
@@ -1764,11 +1891,7 @@ fn look_seg(ui: &mut Ui, s: &mut Settings) {
                             Stroke::NONE,
                         ));
                     }
-                    p.circle_stroke(
-                        dot,
-                        5.0,
-                        Stroke::new(1.0_f32, white(90)),
-                    );
+                    p.circle_stroke(dot, 5.0, Stroke::new(1.0_f32, white(90)));
                     p.galley(
                         Pos2::new(r.left() + 28.0, r.center().y - gal.size().y / 2.0),
                         gal,
@@ -1920,7 +2043,7 @@ fn sec_frame(ui: &mut Ui, s: &mut Settings) {
         "Rim of the picture",
         "only the edges, the middle stays sharp",
     );
-    seg(ui, &mut s.edge, &[("off".to_string(), "Off", ""), ("blur".into(), "Blur", "Soft blur towards the edges"), ("motion".into(), "Motion", "Light motion blur: streaks sideways at the left and right edge, up and down at the top and bottom"), ("lens".into(), "Lens", "The edges look bent, like through a lens")]);
+    seg_full(ui, &mut s.edge, &[("off".to_string(), "Off", ""), ("blur".into(), "Blur", "Soft blur towards the edges"), ("motion".into(), "Motion", "Light motion blur: streaks sideways at the left and right edge, up and down at the top and bottom"), ("lens".into(), "Lens", "The edges look bent, like through a lens")]);
     if s.edge != "off" {
         range(
             ui,
@@ -2136,7 +2259,11 @@ fn sec_out(ui: &mut Ui, app: &mut App) {
     // font of the title cards and words
     let mut font_msg: Option<(String, bool)> = None;
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Font").font(medium(13.5)).color(c().text2));
+        ui.label(
+            egui::RichText::new("Font")
+                .font(medium(13.5))
+                .color(c().text2),
+        );
         let name = if s.font.trim().is_empty() {
             "Anton (built-in)".to_string()
         } else {
