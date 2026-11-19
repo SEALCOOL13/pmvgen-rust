@@ -1,6 +1,7 @@
 # PMV Generator – native (Rust)
 
-A native desktop rewrite of [pmvgen.github.io](https://github.com/pmvgen/pmvgen.github.io) (web version 2.38.10).
+A native desktop companion to [pmvgen.github.io](https://github.com/pmvgen/pmvgen.github.io) (a rewrite of web
+version 2.38.10) – local only, for people who want to work on their own computer.
 Pick a song and a folder of clips – on every beat it cuts to the next one: split-screen layouts, effects on cuts,
 beats and drops, speed ramps, clip audio, a live fullscreen show – and, beyond the web version, a studio to preview
 and edit a generated PMV, project files that render the same video again, and fast hardware-encoded exports.
@@ -19,15 +20,23 @@ songs, clip folders and projects onto the window.
 ## The window
 
 It is laid out like the web version: **1 Music · 2 Clips · 3 Style · 4 Go**, with the same options, labels and
-hints, the same colours and the *Liquid glass* look (switch at the top right). The window scales itself to its size
-and to the screen; **Ctrl +** / **Ctrl −** zoom further, **Ctrl 0** resets.
+hints, the same colours and the *Liquid glass* look (switch at the top right). Beside it, a **theme**: the
+original, your **system's** (GTK theme on Linux, accent and light / dark on Windows 11), Fluent, Adwaita,
+Catppuccin (4), Dracula, Nord, Sweet, Tokyo Night, Gruvbox, Rosé Pine, One Dark, Solarized, Everforest, Kanagawa,
+Monokai, GitHub and more. The window scales itself to its size and to the screen; **Ctrl +** / **Ctrl −** zoom
+further, **Ctrl 0** resets.
 
 1. **Music** – *Your song*: songs (MP3, M4A, WAV, OGG, FLAC, … or a video's music), tempo and beats found at once,
    **½ / 2× tempo**, **Earlier / Later** (20 ms), **Only use … Cut**. Several songs play one after another.
    *PMV as template*: an existing PMV is analysed – music, every cut, the layouts and the flashes are taken over;
-   only the content comes from your clips.
+   only the content comes from your clips. Two ways: **Follow the beat** (the web version's: cuts on the music's
+   beats, the PMV's music) and **Exact cuts** – every frame of the PMV is looked at and every cut is placed exactly
+   where its maker put it, whatever the beat; the music is the PMV's own or **the same song as a file** (where it
+   plays in the PMV is found by itself, to a fraction of a frame), and **where the music starts** can be set as a
+   time or a frame.
 2. **Clips** – folders (subfolders included) or single files; videos, images or both; portrait / landscape; which
-   folders. Clip selection: best moments, **clip speed follows the music**, **motion on the beat**, clean cuts,
+   folders. Clip selection: best moments, **clip speed follows the music**, **motion on the beat**, **clean cuts**
+   (every frame around a clip is checked for a cut to another scene – see *Shot detection* below),
    smart crop, skip the start / end of each video – and **per video** its own skip of the start / end. Clip order:
    match cuts, follow the scenes' timeline, variety.
 3. **Style** – moods and the sections Cutting, Effects, Pictures, Color & look, Picture & frame (**any format from
@@ -60,6 +69,20 @@ Every clip of the PMV is chosen first; then you see it before anything is render
 The look (colour, edges, seams, fit, film effects), sound, title cards, font and output settings can still be changed
 after generating; the cuts, layouts and triggered effects stay as generated.
 
+## Shot detection
+
+*Clean cuts* and *Exact cuts* need to tell a cut to another scene from motion, camera moves, flashes and effects.
+Every frame is looked at by two detectors that cover each other's blind spots:
+
+- **Classical measures** on a small picture: how much of it can't be found again nearby after compensating for
+  motion and brightness, colour change, edge change – and a light-independent **structure comparison** that tells
+  a lighting or colour effect from a new picture. A picture that comes back within 0.2 s was a flash or a glitch.
+- **TransNetV2** (Souček & Lokoč, MIT licence), a neural network made for shot boundaries, run in pure Rust
+  ([tract](https://github.com/sonos/tract)) from `models/transnetv2.onnx`
+  ([ONNX export](https://huggingface.co/elya5/transnetv2) of the [original weights](https://github.com/soCzech/TransNetV2)).
+
+`pmvgen --shots VIDEO` lists what it finds.
+
 ## Command line
 
 ```
@@ -67,8 +90,12 @@ pmvgen --export --song song.mp3 --clips DIR [--clips DIR …] --out FILE [--temp
        [--from SEC] [--to SEC] [--seed N] [--save-project p.pmvproj] [OUTPUT OPTIONS]
 pmvgen --generate --song song.mp3 --clips DIR --save-project p.pmvproj
 pmvgen --render p.pmvproj --out FILE [--part 0:30-1:10] [OUTPUT OPTIONS]
+pmvgen --export --template PMV --exact [--song song.flac] [--music-start 0:05.300] --clips DIR --out FILE
+                                   # exact cuts: every cut where the PMV has it; the song file is lined up by itself
 pmvgen --analyze song.mp3          # tempo and beats as JSON
 pmvgen --encoders                  # which encoders work on this computer
+pmvgen --shots VIDEO               # where a video cuts to another scene
+pmvgen --align PMV --clips SONG    # where a song file plays in a PMV's soundtrack
 
 OUTPUT OPTIONS: --codec h264|h265|av1|web  --encoder auto|cpu|nvenc|qsv|amf|vaapi|mf  --preset fast|balanced|small
                 --quality 144…2160  --fps 24|25|30|50|60  --crf 12–40  --format 16:9|9:16|1:1|21:9|32:9|…  --font FILE
@@ -111,4 +138,4 @@ Settings live in `~/.config/pmvgen/settings.json` (Windows: `%APPDATA%\pmvgen\se
 ## Licenses
 
 MIT (like the original – see `assets/ORIGINAL-LICENSE.txt`). Font: Anton (SIL Open Font License,
-`assets/Anton-OFL.txt`).
+`assets/Anton-OFL.txt`). Shot detection model: TransNetV2 (MIT).
