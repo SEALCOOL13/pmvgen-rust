@@ -6,7 +6,6 @@ use crate::media::{fit_for, SNAP};
 use crate::plan::{Slot, SCROLL};
 use crate::raster;
 use crate::settings::Settings;
-use crate::text;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tiny_skia::{
@@ -311,6 +310,10 @@ pub struct Compositor {
     prof_n: usize,
     maps: std::collections::HashMap<(&'static str, u32), Vec<u8>>,
     prof_acc: std::collections::HashMap<&'static str, f64>,
+    font: crate::text::Font,
+    /// the plan's seed: every frame's chance (shake, glitch stripes, VHS noise) comes from it and the frame's
+    /// time, so a project draws the same pictures every time – also when it starts in the middle
+    seed: u64,
 }
 
 fn color(rgb: [u8; 3], a: f32) -> Color {
@@ -550,13 +553,13 @@ impl Compositor {
         }
     }
 
-    pub fn new(w: u32, h: u32, s: &Settings) -> Compositor {
+    pub fn new(w: u32, h: u32, s: &Settings, seed: u64) -> Compositor {
         let q_short = if s.quality >= 1080.0 { 1080.0 } else { 720.0 };
         let k = (w.min(h) as f32 / q_short).max(0.1);
         let la = (s.look_amt / 100.0).clamp(0.0, 1.0) as f32;
         let (look, tint0, vig) = look_of(&s.look, la, hex_rgb(&s.look_color));
         let tint = tint0.map(|t| [t[0], t[1], t[2], t[3] * la]);
-        let mut rng = StdRng::from_entropy();
+        let mut rng = StdRng::seed_from_u64(seed ^ 0x5eed_9a1e);
         let mut grain = Pixmap::new(256, 256).unwrap();
         for px in grain.data_mut().as_chunks_mut::<4>().0 {
             let v = rng.gen::<u8>();
@@ -583,6 +586,8 @@ impl Compositor {
             prof_n: 0,
             maps: Default::default(),
             prof_acc: Default::default(),
+            font: crate::text::Font::from_setting(&s.font),
+            seed,
         }
     }
 
@@ -637,6 +642,9 @@ impl Compositor {
         let e = st.energy;
         let fxs = self.s.fx.clone();
         let k = self.k;
+        self.rng = StdRng::seed_from_u64(
+            self.seed ^ ((t * 1000.0).round() as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+        );
         self.canvas.fill(Color::BLACK);
         let mut prof = Prof::new();
 
@@ -1616,7 +1624,7 @@ impl Compositor {
         let txt = word.to_uppercase();
         let mut size = wf.min(hf) * scale;
         let max_w = wf * 0.86;
-        let mw = text::measure(&txt, size);
+        let mw = self.font.measure(&txt, size);
         if mw > max_w {
             size *= max_w / mw;
         }
@@ -1632,7 +1640,7 @@ impl Compositor {
         if a <= 0.0 {
             return;
         }
-        let Some(pth) = text::path(&txt, size) else {
+        let Some(pth) = self.font.path(&txt, size) else {
             return;
         };
         let base = Transform::from_translate(wf / 2.0, hf / 2.0)
@@ -1735,11 +1743,11 @@ impl Compositor {
         })
         .to_uppercase();
         let mut size = size0;
-        let mw = text::measure(&ttl, size);
+        let mw = self.font.measure(&ttl, size);
         if mw > wf * 0.86 {
             size = size * wf * 0.86 / mw;
         }
-        if let Some(pth) = text::path(&ttl, size) {
+        if let Some(pth) = self.font.path(&ttl, size) {
             self.canvas.fill_path(
                 &pth,
                 &paint(color([251, 239, 244], a)),
@@ -1757,7 +1765,7 @@ impl Compositor {
             self.canvas
                 .fill_rect(r, &paint(color(PINK, a)), Transform::identity(), None);
         }
-        if let Some(pth) = text::path(credits, size0 * 0.28) {
+        if let Some(pth) = self.font.path(credits, size0 * 0.28) {
             self.canvas.fill_path(
                 &pth,
                 &paint(color([251, 239, 244], 0.75 * a)),
@@ -1802,7 +1810,7 @@ mod bench {
             s.fx.vhs = true;
             s.look = "noir".into();
         }
-        let mut c = Compositor::new(1280, 720, &s);
+        let mut c = Compositor::new(1280, 720, &s, 1);
         let mut pix = Pixmap::new(1280, 720).unwrap();
         for (i, v) in pix.data_mut().iter_mut().enumerate() {
             *v = if i % 4 == 3 { 255 } else { (i * 7 % 251) as u8 };

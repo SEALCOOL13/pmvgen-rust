@@ -235,6 +235,12 @@ pub struct Settings {
     pub layout_shape: BTreeMap<String, String>,
     #[serde(deserialize_with = "lb")]
     pub best_spots: bool,
+    /// clip speed follows the music (experimental in the web version)
+    #[serde(deserialize_with = "lb")]
+    pub pace_match: bool,
+    /// motion on the beat (experimental in the web version)
+    #[serde(deserialize_with = "lb")]
+    pub beat_sync: bool,
     #[serde(deserialize_with = "lb")]
     pub clean_cuts: bool,
     #[serde(deserialize_with = "lb")]
@@ -338,6 +344,9 @@ pub struct Settings {
     pub outro: bool,
     #[serde(deserialize_with = "lb")]
     pub intro_each: bool,
+    /// start the show right after a song is picked
+    #[serde(deserialize_with = "lb")]
+    pub auto_start: bool,
     #[serde(deserialize_with = "ls")]
     pub title: String,
     #[serde(deserialize_with = "ln")]
@@ -351,6 +360,21 @@ pub struct Settings {
     pub hwaccel: bool,
     #[serde(deserialize_with = "ln")]
     pub export_crf: f64,
+    /// video codec of the export: h264 | h265 | av1 | web (VP9 + Opus in WebM)
+    #[serde(deserialize_with = "ls")]
+    pub codec: String,
+    /// who encodes: auto (the fastest graphics-card encoder that works, else the processor) | cpu | nvenc | qsv | amf | vaapi | mf
+    #[serde(deserialize_with = "ls")]
+    pub encoder: String,
+    /// encoding preset: fast | balanced | small (smallest file)
+    #[serde(deserialize_with = "ls")]
+    pub enc_speed: String,
+    /// a font file (TTF / OTF) for the title cards and words; empty = the built-in Anton
+    #[serde(deserialize_with = "ls")]
+    pub font: String,
+    /// liquid glass look of the window (the web version's switch at the top right)
+    #[serde(deserialize_with = "lb")]
+    pub glass: bool,
 }
 
 impl Default for Settings {
@@ -369,6 +393,8 @@ impl Default for Settings {
             shape: "all".into(),
             layout_shape: BTreeMap::new(),
             best_spots: true,
+            pace_match: false,
+            beat_sync: false,
             clean_cuts: true,
             smart_crop: true,
             variety: true,
@@ -418,26 +444,101 @@ impl Default for Settings {
             intro: false,
             outro: false,
             intro_each: false,
+            auto_start: false,
             title: String::new(),
             quality: 720.0,
             export_fps: 30.0,
             show_quality: 720.0,
             hwaccel: true,
             export_crf: 20.0,
+            codec: "h264".into(),
+            encoder: "auto".into(),
+            enc_speed: "balanced".into(),
+            font: String::new(),
+            glass: true,
         }
     }
 }
 
 pub const LAYOUT_IDS: [&str; 6] = ["full", "kaleido", "duo", "trim", "tri", "quad"];
 
+/// Picture formats (width:height). The landscape ones from square to super-wide, then the upright ones.
+pub const RATIOS: [(&str, &str); 15] = [
+    ("1:1", "1:1 square"),
+    ("5:4", "5:4"),
+    ("4:3", "4:3 classic TV"),
+    ("3:2", "3:2"),
+    ("16:10", "16:10"),
+    ("16:9", "16:9 landscape"),
+    ("1.85:1", "1.85:1 cinema"),
+    ("2:1", "2:1"),
+    ("21:9", "21:9 ultrawide"),
+    ("2.39:1", "2.39:1 cinemascope"),
+    ("32:9", "32:9 super ultrawide"),
+    ("4:5", "4:5 portrait"),
+    ("3:4", "3:4 portrait"),
+    ("2:3", "2:3 portrait"),
+    ("9:16", "9:16 portrait"),
+];
+/// Width ÷ height of a format ("16:9" → 1.78); None if it isn't one
+pub fn ratio_of(f: &str) -> Option<f64> {
+    let (a, b) = f.split_once(':')?;
+    let (a, b) = (a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?);
+    (a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite()).then(|| a / b)
+}
+
+/// Export qualities: the short side of the picture (2160 = 4K)
+pub const QUALITIES: [(f64, &str); 8] = [
+    (144.0, "144p"),
+    (240.0, "240p"),
+    (360.0, "360p"),
+    (480.0, "480p"),
+    (720.0, "720p"),
+    (1080.0, "1080p"),
+    (1440.0, "1440p"),
+    (2160.0, "4K · 2160p"),
+];
+/// Live show / preview picture
+pub const SHOW_QUALITIES: [(f64, &str); 6] = [
+    (240.0, "240p"),
+    (360.0, "360p"),
+    (480.0, "480p"),
+    (540.0, "540p"),
+    (720.0, "720p"),
+    (1080.0, "1080p"),
+];
+pub const FPS_CHOICES: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
+pub const CODECS: [(&str, &str); 4] = [
+    ("h264", "H.264"),
+    ("h265", "H.265 / HEVC"),
+    ("av1", "AV1"),
+    ("web", "Web (VP9 · WebM)"),
+];
+pub const ENCODERS: [(&str, &str); 7] = [
+    ("auto", "Automatic"),
+    ("cpu", "Processor"),
+    ("nvenc", "NVIDIA (NVENC)"),
+    ("qsv", "Intel (Quick Sync)"),
+    ("amf", "AMD (AMF)"),
+    ("vaapi", "VA-API (Linux)"),
+    ("mf", "Media Foundation (Windows)"),
+];
+pub const ENC_SPEEDS: [(&str, &str); 3] = [
+    ("fast", "Fastest"),
+    ("balanced", "Balanced"),
+    ("small", "Smallest file"),
+];
+
 // Keys that are not part of "My settings" (web version's list + this version's own machine settings)
-const NOT_IN_PRESET: [&str; 6] = [
+const NOT_IN_PRESET: [&str; 8] = [
     "title",
     "shuffle",
     "showQuality",
     "hwaccel",
     "exportFps",
-    "exportCrf",
+    "encoder",
+    "glass",
+    "font",
 ];
 
 pub struct Preset {
@@ -520,7 +621,9 @@ impl Settings {
         );
         pick(&mut self.edge, &["off", "blur", "motion", "lens"], &d.edge);
         // ("window" – match the window – is the web version's own; here 16:9)
-        pick(&mut self.format, &["16:9", "9:16"], &d.format);
+        if !RATIOS.iter().any(|(r, _)| *r == self.format) {
+            self.format = d.format.clone();
+        }
         pick(&mut self.split, &["cols", "rows"], &d.split);
         pick(&mut self.fit, &["contain", "cover"], &d.fit);
         pick(&mut self.voice_mode, &["drops", "always"], &d.voice_mode);
@@ -536,16 +639,46 @@ impl Settings {
         );
         pick(&mut self.fs_where, &["low", "mid", "high"], &d.fs_where);
         pick(&mut self.fs_style, &["sharp", "smooth"], &d.fs_style);
-        if self.quality != 1080.0 {
-            self.quality = 720.0;
+        if !QUALITIES.iter().any(|(q, _)| *q == self.quality) {
+            self.quality = d.quality;
         }
-        if ![360.0, 540.0, 720.0, 1080.0].contains(&self.show_quality) {
-            self.show_quality = 720.0;
+        if !SHOW_QUALITIES.iter().any(|(q, _)| *q == self.show_quality) {
+            self.show_quality = d.show_quality;
         }
-        if self.export_fps != 60.0 {
-            self.export_fps = 30.0;
+        if !FPS_CHOICES.contains(&self.export_fps) {
+            self.export_fps = d.export_fps;
         }
-        self.export_crf = self.export_crf.clamp(12.0, 35.0);
+        self.export_crf = if self.export_crf.is_finite() {
+            self.export_crf.clamp(12.0, 40.0)
+        } else {
+            d.export_crf
+        };
+        pick(&mut self.codec, &CODECS.map(|c| c.0), &d.codec);
+        pick(&mut self.encoder, &ENCODERS.map(|c| c.0), &d.encoder);
+        pick(&mut self.enc_speed, &ENC_SPEEDS.map(|c| c.0), &d.enc_speed);
+        // numbers from hand-edited files: finite and in range
+        let fix = |v: &mut f64, lo: f64, hi: f64, def: f64| {
+            *v = if v.is_finite() { v.clamp(lo, hi) } else { def };
+        };
+        fix(&mut self.skip_head, 0.0, 600.0, d.skip_head);
+        fix(&mut self.skip_tail, 0.0, 600.0, d.skip_tail);
+        fix(&mut self.cut_lead, 0.0, 200.0, d.cut_lead);
+        fix(&mut self.min_beats, 0.0, 64.0, d.min_beats);
+        fix(&mut self.max_beats, 0.0, 64.0, d.max_beats);
+        fix(&mut self.pulse_amt, 0.0, 150.0, d.pulse_amt);
+        fix(&mut self.pic_flash_len, 0.0, 16.0, d.pic_flash_len);
+        fix(&mut self.pic_flash_pct, 0.0, 100.0, d.pic_flash_pct);
+        fix(&mut self.pic_overlay_amt, 0.0, 100.0, d.pic_overlay_amt);
+        fix(&mut self.pic_overlay_len, 0.0, 32.0, d.pic_overlay_len);
+        fix(&mut self.pic_overlay_pct, 0.0, 100.0, d.pic_overlay_pct);
+        fix(&mut self.look_amt, 0.0, 100.0, d.look_amt);
+        fix(&mut self.bright, 0.0, 100.0, d.bright);
+        fix(&mut self.soft_amt, 0.0, 100.0, d.soft_amt);
+        fix(&mut self.div_w, 0.0, 12.0, d.div_w);
+        fix(&mut self.edge_amt, 0.0, 100.0, d.edge_amt);
+        fix(&mut self.song_vol, 0.0, 100.0, d.song_vol);
+        fix(&mut self.clip_vol, 0.0, 100.0, d.clip_vol);
+        fix(&mut self.fs_speed, 50.0, 500.0, d.fs_speed);
         if !LAYOUT_IDS.iter().any(|id| self.layouts.get(id)) {
             self.layouts = Layouts::default();
         }
@@ -603,6 +736,19 @@ pub fn config_dir() -> PathBuf {
     d
 }
 
+/// Skip the start / end of one video (seconds); None = the setting for all videos
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct ClipSkip {
+    pub head: Option<f64>,
+    pub tail: Option<f64>,
+}
+impl ClipSkip {
+    pub fn is_empty(&self) -> bool {
+        self.head.is_none() && self.tail.is_none()
+    }
+}
+
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Stored {
@@ -610,6 +756,13 @@ pub struct Stored {
     pub presets: BTreeMap<String, Value>,
     pub folders: Vec<String>,
     pub last_dir: Option<String>,
+    /// Pinned moments (Change the moment): file path → seconds in that video (at most 12 each)
+    pub pins: BTreeMap<String, Vec<f64>>,
+    /// Per-video skip of start / end: file path → seconds
+    pub clip_skips: BTreeMap<String, ClipSkip>,
+    /// The window's own zoom on top of the automatic scaling (Ctrl + / Ctrl −)
+    pub ui_zoom: Option<f32>,
+    pub recent_projects: Vec<String>,
 }
 
 pub fn load_stored() -> Stored {
@@ -620,10 +773,27 @@ pub fn load_stored() -> Stored {
 }
 pub fn save_stored(st: &Stored) -> anyhow::Result<()> {
     let p = config_dir().join("settings.json");
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(st)?)?;
-    std::fs::rename(&tmp, &p)?;
+    crate::util::write_atomic(&p, &serde_json::to_vec_pretty(st)?)?;
     Ok(())
+}
+
+/// Pins of a video: rounded to 0.1 s, sorted, at most the 12 last (like the web version)
+pub fn set_pins(st: &mut Stored, path: &str, list: &[f64]) {
+    let mut l: Vec<f64> = list
+        .iter()
+        .filter(|x| x.is_finite() && **x >= 0.0)
+        .map(|x| (x * 10.0).round() / 10.0)
+        .collect();
+    l.sort_by(|a, b| a.total_cmp(b));
+    l.dedup();
+    if l.len() > 12 {
+        l.drain(..l.len() - 12);
+    }
+    if l.is_empty() {
+        st.pins.remove(path);
+    } else {
+        st.pins.insert(path.to_string(), l);
+    }
 }
 pub fn settings_from_stored(st: &Stored) -> Settings {
     let mut s = st
@@ -666,5 +836,27 @@ mod tests {
         assert!(s.fx.shake && s.fx.flash);
         assert!(!s.layouts.quad && s.layouts.full);
         assert_eq!(s.pic_flash_rate, "4");
+    }
+    #[test]
+    fn sanitize_fixes_bad_values() {
+        let j = serde_json::json!({"quality": 999, "format": "21:9", "codec": "x", "songVol": 1e9, "skipHead": -4});
+        let s = Settings::default().with_preset(&j);
+        assert_eq!(s.quality, 720.0);
+        assert_eq!(s.format, "21:9");
+        assert_eq!(s.codec, "h264");
+        assert_eq!(s.song_vol, 100.0);
+        assert_eq!(s.skip_head, 0.0);
+        assert!((ratio_of("21:9").unwrap() - 21.0 / 9.0).abs() < 1e-9);
+        assert!(ratio_of("x").is_none() && ratio_of("0:1").is_none());
+    }
+    #[test]
+    fn pins_are_kept_tidy() {
+        let mut st = Stored::default();
+        let many: Vec<f64> = (0..20).map(|i| i as f64 + 0.04).collect();
+        set_pins(&mut st, "a", &many);
+        assert_eq!(st.pins["a"].len(), 12);
+        assert_eq!(st.pins["a"][0], 8.0);
+        set_pins(&mut st, "a", &[]);
+        assert!(!st.pins.contains_key("a"));
     }
 }

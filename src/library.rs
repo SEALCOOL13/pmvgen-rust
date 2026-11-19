@@ -2,13 +2,15 @@
 // Size and duration are read in the background with ffprobe (needed for "Portrait only" etc.).
 
 use crate::ff;
-use crate::settings::Settings;
+use crate::settings::{ClipSkip, Settings};
+use crate::util::LockExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     Video,
     Image,
@@ -26,12 +28,14 @@ pub struct Item {
     pub dur: f64,
     pub probed: bool,
     pub bad: Option<String>,
+    /// this video's own skip of its start / end (None = the setting for all videos)
+    pub skip: ClipSkip,
 }
 
-const VIDEO: [&str; 12] = [
+pub const VIDEO: [&str; 12] = [
     "mp4", "m4v", "webm", "mkv", "mov", "ogv", "avi", "wmv", "flv", "ts", "mts", "mpg",
 ];
-const IMAGE: [&str; 7] = ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp"];
+pub const IMAGE: [&str; 7] = ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp"];
 
 pub fn kind_of(p: &Path) -> Option<Kind> {
     let e = p.extension()?.to_string_lossy().to_lowercase();
@@ -51,6 +55,8 @@ pub struct Library {
     pub off: HashSet<PathBuf>, // added folders that are switched off
     seen: HashSet<PathBuf>,
     next: usize,
+    /// per-video skips (file path → seconds), applied to the items as they are added
+    pub skips: std::collections::HashMap<String, ClipSkip>,
 }
 
 pub type Shared = Arc<Mutex<Library>>;
@@ -64,6 +70,7 @@ impl Library {
             return false;
         }
         self.next += 1;
+        let p_key = p.to_string_lossy().to_string();
         let name = p
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -79,6 +86,7 @@ impl Library {
             dur: 0.0,
             probed: false,
             bad: None,
+            skip: self.skips.get(&p_key).copied().unwrap_or_default(),
         });
         true
     }
@@ -110,6 +118,23 @@ impl Library {
             .filter(|it| it.kind == Kind::Image && it.bad.is_none() && !self.off.contains(&it.root))
             .cloned()
             .collect()
+    }
+    /// Set one video's own skips (and remember them for when it is added again)
+    pub fn set_skip(&mut self, path: &Path, skip: ClipSkip) {
+        let key = path.to_string_lossy().to_string();
+        if skip.is_empty() {
+            self.skips.remove(&key);
+        } else {
+            self.skips.insert(key, skip);
+        }
+        for it in self.items.iter_mut().filter(|i| i.path == path) {
+            it.skip = skip;
+        }
+    }
+    pub fn videos(&self) -> impl Iterator<Item = &Item> {
+        self.items
+            .iter()
+            .filter(|i| i.kind == Kind::Video && i.bad.is_none())
     }
     pub fn count(&self, s: &Settings) -> (usize, usize, usize) {
         let list = self.matching(s);
@@ -146,6 +171,9 @@ pub fn fits_filters(it: &Item, s: &Settings) -> bool {
 
 /// Walk a folder (and its subfolders) and add every clip; returns how many were added
 pub fn add_folder(lib: &Shared, root: &Path) -> usize {
+    // (absolute paths: projects and pins refer to them from anywhere)
+    let root_abs = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = root_abs.as_path();
     let mut stack = vec![root.to_path_buf()];
     let mut found = Vec::new();
     while let Some(d) = stack.pop() {
@@ -166,7 +194,7 @@ pub fn add_folder(lib: &Shared, root: &Path) -> usize {
         }
     }
     found.sort();
-    let mut l = lib.lock().unwrap();
+    let mut l = lib.lk();
     if !l.roots.iter().any(|r| r == root) {
         l.roots.push(root.to_path_buf());
     }
@@ -181,13 +209,14 @@ pub fn add_folder(lib: &Shared, root: &Path) -> usize {
 
 pub fn add_files(lib: &Shared, files: &[PathBuf]) -> usize {
     let root = PathBuf::from("(single files)");
-    let mut l = lib.lock().unwrap();
+    let mut l = lib.lk();
     if !l.roots.iter().any(|r| r == &root) {
         l.roots.push(root.clone());
     }
     files
         .iter()
-        .filter(|p| l.add_file((*p).clone(), &root))
+        .map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()))
+        .filter(|p| l.add_file(p.clone(), &root))
         .count()
 }
 
@@ -208,7 +237,7 @@ pub fn probe_all(lib: &Shared, busy: &Arc<AtomicUsize>) {
             loop {
                 // take the next unprobed one (marking it so no other worker takes it)
                 let job = {
-                    let mut l = lib.lock().unwrap();
+                    let mut l = lib.lk();
                     l.items.iter_mut().find(|i| !i.probed).map(|i| {
                         i.probed = true;
                         (i.id, i.path.clone(), i.kind)
@@ -216,7 +245,7 @@ pub fn probe_all(lib: &Shared, busy: &Arc<AtomicUsize>) {
                 };
                 let Some((id, path, kind)) = job else { break };
                 let res = probe_item(&path, kind);
-                let mut l = lib.lock().unwrap();
+                let mut l = lib.lk();
                 if let Some(it) = l.items.iter_mut().find(|i| i.id == id) {
                     match res {
                         Ok((w, h, d)) => {

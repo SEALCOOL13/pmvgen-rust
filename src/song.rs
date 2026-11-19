@@ -42,35 +42,6 @@ pub fn song_name(p: &Path) -> String {
         .unwrap_or_else(|| "Song".into())
 }
 
-pub fn is_song_file(p: &Path) -> bool {
-    let e = p
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    matches!(
-        e.as_str(),
-        "mp3"
-            | "m4a"
-            | "aac"
-            | "wav"
-            | "ogg"
-            | "oga"
-            | "opus"
-            | "flac"
-            | "wma"
-            | "aiff"
-            | "aif"
-            | "alac"
-            | "mka"
-            | "mp4"
-            | "m4v"
-            | "mkv"
-            | "webm"
-            | "mov"
-            | "avi"
-    )
-}
-
 fn input_args(c: &mut std::process::Command, path: &Path, from: f64, to: Option<f64>) {
     if from > 0.0 {
         c.arg("-ss").arg(format!("{from:.3}"));
@@ -248,7 +219,7 @@ pub fn load(
     }
     progress(0.97);
     let mut song = Song {
-        path: path.to_path_buf(),
+        path: std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
         name: song_name(path),
         from,
         to,

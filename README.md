@@ -1,94 +1,114 @@
 # PMV Generator – native (Rust)
 
 A native desktop rewrite of [pmvgen.github.io](https://github.com/pmvgen/pmvgen.github.io) (web version 2.38.10).
-Pick a song and a folder of clips – on every beat it cuts to the next one: split-screen layouts, effects
-on cuts, beats and drops, speed ramps, a live fullscreen show, and an MP4 export.
+Pick a song and a folder of clips – on every beat it cuts to the next one: split-screen layouts, effects on cuts,
+beats and drops, speed ramps, clip audio, a live fullscreen show – and, beyond the web version, a studio to preview
+and edit a generated PMV, project files that render the same video again, and fast hardware-encoded exports.
 
 Everything runs locally. Nothing is uploaded.
 
 ## Run it
 
-**Windows:** unzip, double-click `pmvgen.exe`. ffmpeg is included in the `ffmpeg` folder.
-(Using the zip without ffmpeg: install it with `winget install Gyan.FFmpeg`, or put `ffmpeg.exe` and
-`ffprobe.exe` next to `pmvgen.exe`.)
+**Linux:** `sudo apt install ffmpeg`, then run `pmvgen`.
+**Windows:** put `ffmpeg.exe` and `ffprobe.exe` next to `pmvgen.exe` (or in an `ffmpeg` folder beside it), or
+install ffmpeg (`winget install Gyan.FFmpeg`).
 
-**Linux** (built on Ubuntu 24.04 / Mint 22; also starts on glibc 2.35 / Mint 21):
+Open files directly: `pmvgen song.mp3 ~/Videos/clips` – or a project: `pmvgen my.pmvproj`. You can also drop
+songs, clip folders and projects onto the window.
+
+## The window
+
+It is laid out like the web version: **1 Music · 2 Clips · 3 Style · 4 Go**, with the same options, labels and
+hints, the same colours and the *Liquid glass* look (switch at the top right). The window scales itself to its size
+and to the screen; **Ctrl +** / **Ctrl −** zoom further, **Ctrl 0** resets.
+
+1. **Music** – *Your song*: songs (MP3, M4A, WAV, OGG, FLAC, … or a video's music), tempo and beats found at once,
+   **½ / 2× tempo**, **Earlier / Later** (20 ms), **Only use … Cut**. Several songs play one after another.
+   *PMV as template*: an existing PMV is analysed – music, every cut, the layouts and the flashes are taken over;
+   only the content comes from your clips.
+2. **Clips** – folders (subfolders included) or single files; videos, images or both; portrait / landscape; which
+   folders. Clip selection: best moments, **clip speed follows the music**, **motion on the beat**, clean cuts,
+   smart crop, skip the start / end of each video – and **per video** its own skip of the start / end. Clip order:
+   match cuts, follow the scenes' timeline, variety.
+3. **Style** – moods and the sections Cutting, Effects, Pictures, Color & look, Picture & frame (**any format from
+   1:1 to 32:9, or portrait 4:5 to 9:16**), Sound (**clip audio** with its own volume – only on drops or always),
+   Funscript and Output (title cards with **your own font**, export quality **144p to 4K**, frame rate, **H.264 /
+   H.265 / AV1 / Web (VP9)**, the encoder – **NVIDIA, Intel, AMD, VA-API, Media Foundation or the processor** – and
+   the preset **Fastest / Balanced / Smallest file**).
+4. **Go** – **Start the show** (live, fullscreen; clips are chosen as it plays) or **Generate, preview & edit**.
+
+### The live show
+
+Space pause · F fullscreen · H hide the bar · I clip info · **M change the moment** · N / P next / previous song ·
+Esc stop. *Change the moment* pauses and gives every clip on screen a slider to take it from another moment of its
+video; **Pin this moment** makes clips of that video often start there (kept between runs).
+
+### The studio (Generate, preview & edit)
+
+Every clip of the PMV is chosen first; then you see it before anything is rendered:
+
+- **Preview** with sound (song + clip audio), play / pause, jump anywhere.
+- **Timeline**: the layouts, every shot in its field with a thumbnail, drops. Click to select (Ctrl+click adds,
+  Shift+click a range, drag a box, Ctrl+A all), Ctrl+wheel zooms, the wheel scrolls.
+- **Swap** the selected shots' clips: **Auto** (like the generator: best moments, match cuts, the music's pace),
+  **Random**, or **by hand** (a clip and its moment) – taken from the library, one folder, or the clips the PMV
+  already uses. **Change the moment** of the selected clips. **Undo / redo** (Ctrl+Z / Ctrl+Y).
+- **Save project**: a `.pmvproj` file with every cut, effect and clip. Opening it again renders **exactly the same
+  video** – the same frames and the same sound – as long as the song and the clips are the same files.
+- **Export video**, with progress; nothing is left behind when it is cancelled or fails.
+
+The look (colour, edges, seams, fit, film effects), sound, title cards, font and output settings can still be changed
+after generating; the cuts, layouts and triggered effects stay as generated.
+
+## Command line
 
 ```
-sudo apt install ffmpeg
-tar xzf pmvgen-linux-x86_64.tar.gz && ./pmvgen/pmvgen
+pmvgen --export --song song.mp3 --clips DIR [--clips DIR …] --out FILE [--template PMV] [--settings my.pmvgen.json]
+       [--from SEC] [--to SEC] [--seed N] [--save-project p.pmvproj] [OUTPUT OPTIONS]
+pmvgen --generate --song song.mp3 --clips DIR --save-project p.pmvproj
+pmvgen --render p.pmvproj --out FILE [--part 0:30-1:10] [OUTPUT OPTIONS]
+pmvgen --analyze song.mp3          # tempo and beats as JSON
+pmvgen --encoders                  # which encoders work on this computer
+
+OUTPUT OPTIONS: --codec h264|h265|av1|web  --encoder auto|cpu|nvenc|qsv|amf|vaapi|mf  --preset fast|balanced|small
+                --quality 144…2160  --fps 24|25|30|50|60  --crf 12–40  --format 16:9|9:16|1:1|21:9|32:9|…  --font FILE
 ```
 
-You can also pass songs and clip folders directly: `pmvgen song.mp3 ~/Videos/clips` (or drop them onto the window).
-
-## Using it
-
-1. **Music** – add songs (MP3, M4A, WAV, OGG, FLAC, … or a video, then its music is used). Tempo and beats are
-   found right away. **½ tempo / 2× tempo** if the detection is off by an octave, **Earlier / Later** move the
-   cuts by 20 ms, **Only use … Cut** takes a part of the song. Several songs play one after another
-   (optionally shuffled). DJ mixes over 45 minutes get their tempo per 2-minute stretch, like the web version.
-2. **Clips** – add folders (subfolders included) or files: MP4, WebM, MOV, MKV, AVI, … and JPG, PNG, WebP,
-   GIF, AVIF, BMP. Folders are remembered between runs. Filters: videos / images / both, portrait / landscape,
-   best moments, clean cuts, smart crop, match cuts, variety, follow the scenes' timeline, skip start / end.
-3. **Style** – moods (PMV classic, Maximal, Hypno, Clean) and the same sections as the web version: cutting
-   and layouts (with a clip shape per layout), bars and phrases, reveal opening, scrolling sides, all
-   19 effects, image flash / overlay, color looks, soft seams, rim effects, intro / outro, funscript.
-4. **Start the show** – fullscreen live show. Keys: **Space** pause · **F** fullscreen · **Esc** stop ·
-   **H** hide the bar · **I** clip info (what is on screen, fps, clips that were left out) · **N / P** next /
-   previous song.
-5. **Export video** – renders the show frame by frame to an MP4 (H.264 + AAC, 720p or 1080p, 30 or 60 fps).
-   Nothing is dropped however slow the computer is. With **Funscript** on, a `.funscript` is written next to it.
-
-**My settings**: save / load named settings; **Export / Import** uses the web version's `.pmvgen.json` format,
-so settings move between this, the web version and the Stash plugin.
-
-Settings live in `%APPDATA%\pmvgen\settings.json` (Windows) or `~/.config/pmvgen/settings.json` (Linux).
-
-### Command line
-
-```
-pmvgen --export --song song.mp3 --clips DIR [--clips DIR …] --out out.mp4 [--settings my.pmvgen.json] [--from S] [--to S]
-pmvgen --analyze song.mp3        # tempo, beats, energy, downbeats as JSON
-```
-
-(On Windows the program is a window app, so command-line output only shows when redirected, e.g. `2> log.txt`.)
+Every graphics card encoder is test-run once before it is used (ffmpeg lists encoders even when their hardware is
+missing); if it still refuses a size or format when the export starts, the processor takes over by itself.
 
 ## What is the same as the web version
 
-The parts that decide what happens were ported line by line and **checked against the original JavaScript**:
-the original modules run unmodified in Node (with a Web Audio implementation), and their results are
-replayed against the Rust code (`tests/diff`). They all match: tempo, every beat time, energy, pace,
-bars and phrases, ½× / 2× tempo, shifting, funscripts, layouts and the picture analysis, including the
-long-mix path.
-
-The direction (`onBeat`: when to cut, which layout, drops, effects, speed ramps, stutter, strobe, pictures)
-and clip selection (best moments, clean cuts, match cuts, variety, sequencing, per-layout shapes) follow the
-original's logic. The drawing (layouts, fit / fill with blurred border, zoom pulse, all effects, looks,
-seams, rim, intro / outro) is a port of `pmvfx.js`.
+The parts that decide what happens were ported line by line and **checked against the original JavaScript** (the
+original modules run in Node; `tests/diff`): tempo, every beat, energy, bars and phrases, ½× / 2× tempo, funscripts,
+layouts and the picture analysis. The direction (when to cut, which layout, effects, speed ramps), clip selection,
+the template analysis (pmvscan), clip speed / motion on the beat and the drawing (pmvfx) follow the original's logic.
 
 ## What is different
 
-- **Recording → Export.** The web version records the live show in real time (WebM). This version renders
-  an MP4 offline instead: every frame is there, even with 4K clips on a slow machine.
-- **Not in this version:** clip audio (mixing in the clips' own sound), Plex, *PMV as template*, live control
-  of The Handy (the funscript file is there), *Change the moment* / pinned moments, mouse control,
-  *Clip speed follows the music* and *Motion on the beat* (both experimental in the web version), the
-  Chinese translation, the *Match window* format.
-- Shifting the beats (Earlier / Later) keeps each beat's energy with its beat (the web version can misalign
-  them when the first beat drops out).
+- **Recording → Export / studio.** The web version records the live show in real time (WebM). Here a PMV is rendered
+  frame by frame to a video file – every frame is there, however slow the computer – and can be previewed and edited
+  first.
+- The template's beat snapping does what the web version's comment says (its code never moves an event).
+- Clip audio keeps its pitch through speed ramps (time-stretched), like the browser does.
+- **Not in this version:** Plex, mouse control, live control of The Handy (a `.funscript` is saved with the video),
+  the Chinese translation, *New clips for every song* (every song gets new clips here).
 
 ## Building
 
 ```
-cargo build --release                         # Linux (needs libgtk-3-dev, libasound2-dev)
+cargo build --release                 # Linux: needs libgtk-3-dev, libasound2-dev
+cargo test --release                  # unit tests + an end-to-end test with generated media (needs ffmpeg)
+cargo clippy --release --all-targets -- -D warnings
 python3 tools_weaken_glibc.py target/release/pmvgen   # optional: lets the binary start on glibc < 2.39
 ```
 
-Windows (cross-compiled from Linux with MinGW): `cargo build --release --target x86_64-pc-windows-gnu`.
+Windows (cross-compiled from Linux): `sudo apt install mingw-w64`, `rustup target add x86_64-pc-windows-gnu`,
+`cargo build --release --target x86_64-pc-windows-gnu`.
 
-Tests: `cargo test --release`; the comparison with the original: see `tests/diff/README.md`.
+Settings live in `~/.config/pmvgen/settings.json` (Windows: `%APPDATA%\pmvgen\settings.json`).
 
 ## Licenses
 
-MIT (like the original – see `ORIGINAL-LICENSE.txt`). Font: Anton (SIL Open Font License, `Anton-OFL.txt`).
-The bundled ffmpeg (Windows zip) is a GPL build from BtbN/FFmpeg-Builds – see `ffmpeg/LICENSE.txt`.
+MIT (like the original – see `assets/ORIGINAL-LICENSE.txt`). Font: Anton (SIL Open Font License,
+`assets/Anton-OFL.txt`).

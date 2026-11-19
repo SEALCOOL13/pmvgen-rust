@@ -6,6 +6,7 @@ use crate::library::Kind;
 use crate::media::{Assigned, Media};
 use crate::plan::{Fx, Plan};
 use crate::smart;
+use crate::util::LockExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tiny_skia::Pixmap;
@@ -56,7 +57,7 @@ impl Renderer {
         bpm: f64,
         wait: bool,
     ) -> Renderer {
-        let comp = Compositor::new(plan.w as u32, plan.h as u32, &media.s);
+        let comp = Compositor::new(plan.w as u32, plan.h as u32, &media.s, plan.seed);
         Renderer {
             plan,
             media,
@@ -87,7 +88,7 @@ impl Renderer {
             let ev = &fx[self.fx_idx];
             let et = ev.t;
             match &ev.fx {
-                Fx::Flash { a, color } => self.trig.flash = Some((et, *a, *color)),
+                Fx::Flash { a, color, .. } => self.trig.flash = Some((et, *a, *color)),
                 Fx::Shake { until } => self.trig.shake_until = *until,
                 Fx::Glitch { until } => self.trig.glitch_until = *until,
                 Fx::Rgb { amt, dur } => self.trig.rgb = Some((et, *amt, *dur)),
@@ -104,7 +105,7 @@ impl Renderer {
 
     fn frame_of(&self, a: &Assigned, t: f64) -> Option<Arc<Pixmap>> {
         let shot = &self.plan.shots[a.shot];
-        let idx = if a.kind == Kind::Image {
+        let idx = if a.pick.kind == Kind::Image {
             0
         } else {
             a.index_at(&self.plan, shot, t)
@@ -118,10 +119,10 @@ impl Renderer {
     }
 
     fn track(&self, a: &Assigned, pix: &Pixmap, t: f64) {
-        let mut l = a.live.lock().unwrap();
+        let mut l = a.live.lk();
         if t - l.measured_t > 0.4 || t < l.measured_t {
             l.measured_t = t;
-            let s = tiny_sig(pix, a.w as f64, a.h as f64);
+            let s = tiny_sig(pix, a.pick.w as f64, a.pick.h as f64);
             if self.media.s.smart_crop {
                 l.target = s.focus;
             }
@@ -140,19 +141,19 @@ impl Renderer {
     /// What is on screen at t – for the info overlay: (field, clip name, state)
     pub fn info(&self, t: f64) -> Vec<(usize, String, String)> {
         let (_, cur, _) = self.plan.shots_at(t);
-        let a = self.media.assigned.lock().unwrap();
+        let a = self.media.assigned.lk();
         cur.iter()
             .enumerate()
             .map(|(g, id)| match id.and_then(|i| a.get(&i)) {
                 Some(x) => {
-                    let st = if let Some(e) = x.frames.failed.lock().unwrap().clone() {
+                    let st = if let Some(e) = x.frames.failed.lk().clone() {
                         format!("failed: {e}")
-                    } else if x.frames.decoded() == 0 && x.kind == Kind::Video {
+                    } else if !x.frames.any() && x.pick.kind == Kind::Video {
                         "loading".into()
                     } else {
                         format!(
                             "{}{}",
-                            if x.kind == Kind::Image {
+                            if x.pick.kind == Kind::Image {
                                 "image"
                             } else {
                                 "playing"
@@ -160,7 +161,7 @@ impl Renderer {
                             if x.smart { "" } else { " (quick pick)" }
                         )
                     };
-                    (g + 1, x.name.clone(), st)
+                    (g + 1, x.pick.name.clone(), st)
                 }
                 None => (g + 1, "—".into(), "no clip yet".into()),
             })
@@ -172,7 +173,7 @@ impl Renderer {
         let plan = self.plan.clone();
         let (pi, cur, leave) = plan.shots_at(t);
         let ph = &plan.phases[pi];
-        let assigned = self.media.assigned.lock().unwrap().clone();
+        let assigned = self.media.assigned.lk().clone();
         // per group: the clip and its frame (a shot whose clip isn't there yet shows the one before it)
         let mut keep: Vec<Option<Kept>> = Vec::new();
         for id in cur.iter() {
@@ -215,17 +216,17 @@ impl Renderer {
             t: f64,
             smart_crop: bool,
         ) -> Tile<'a> {
-            let l = a.live.lock().unwrap();
+            let l = a.live.lk();
             let shot = &plan.shots[a.shot];
             Tile {
                 pix: p.as_ref(),
-                w: a.w as f64,
-                h: a.h as f64,
-                image: a.kind == Kind::Image,
+                w: a.pick.w as f64,
+                h: a.pick.h as f64,
+                image: a.pick.kind == Kind::Image,
                 since: t - cut_t,
                 focus: if smart_crop { Some(l.focus) } else { None },
                 lum: l.lum,
-                kb: a.kb,
+                kb: a.pick.kb,
                 zoom_dir: shot.zoom_dir,
             }
         }

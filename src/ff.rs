@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 
 static FFMPEG: OnceLock<Option<PathBuf>> = OnceLock::new();
 static FFPROBE: OnceLock<Option<PathBuf>> = OnceLock::new();
-static ENCODER: OnceLock<String> = OnceLock::new();
 
 #[cfg(windows)]
 const EXE: &str = ".exe";
@@ -79,25 +78,6 @@ pub fn ffmpeg() -> Result<Command> {
     let mut c = command(p);
     c.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
     Ok(c)
-}
-
-/// The best H.264 encoder this ffmpeg has (libx264, else others, else mpeg4)
-pub fn video_encoder() -> &'static str {
-    ENCODER.get_or_init(|| {
-        let list = ffmpeg()
-            .and_then(|mut c| {
-                c.arg("-encoders");
-                Ok(c.output()?)
-            })
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        for e in ["libx264", "libopenh264", "h264_mf"] {
-            if list.split_whitespace().any(|w| w == e) {
-                return e.to_string();
-            }
-        }
-        "mpeg4".to_string()
-    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -222,14 +202,15 @@ pub fn read_full(r: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<
     Ok(true)
 }
 
-/// Decode a picture (image file or one video frame at `at` seconds) to straight RGBA at w×h
-pub fn decode_rgba(path: &Path, at: Option<f64>, w: u32, h: u32, still: bool) -> Result<Vec<u8>> {
+/// Decode a picture (image file – of an animated GIF / WebP the first frame – or one video frame at `at`
+/// seconds) to straight RGBA at w×h
+pub fn decode_rgba(path: &Path, at: Option<f64>, w: u32, h: u32) -> Result<Vec<u8>> {
+    if w == 0 || h == 0 || w > 16384 || h > 16384 {
+        bail!("no picture: size {w}×{h}");
+    }
     let mut c = ffmpeg()?;
     if let Some(t) = at {
         c.arg("-ss").arg(format!("{:.3}", t.max(0.0)));
-    }
-    if still {
-        // (animated GIF/WebP: the first frame)
     }
     c.arg("-i").arg(path);
     c.args(["-frames:v", "1", "-an", "-sn", "-dn", "-vf"]);

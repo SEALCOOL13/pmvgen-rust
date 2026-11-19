@@ -6,8 +6,11 @@
 
 use crate::bars::Bars;
 use crate::settings::Settings;
+use crate::template::TplEvent;
+use crate::util::cmp_f64;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 
 pub struct LayoutInfo {
     pub id: &'static str,
@@ -64,7 +67,7 @@ pub fn layout(id: &str) -> &'static LayoutInfo {
     LAYOUTS.iter().find(|l| l.id == id).unwrap_or(&LAYOUTS[0])
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Slot {
     pub x: i32,
     pub y: i32,
@@ -155,15 +158,17 @@ pub fn aspect_of_group(slots: &[Slot], g: usize) -> f64 {
 
 pub const SCROLL: f64 = 0.34; // seconds a scroll cut takes
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Phase {
     pub t: f64,
-    pub layout: &'static str,
+    pub layout: String,
+    /// "cols" = fields side by side, "rows" = stacked (a template can switch per layout)
+    pub dir: String,
     pub slots: Vec<Slot>,
     pub groups: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Shot {
     pub id: usize,
     pub phase: usize,
@@ -181,7 +186,7 @@ pub struct Shot {
     pub field_h: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pulse {
     pub t: f64,
     pub energy: f64,
@@ -191,21 +196,47 @@ pub struct Pulse {
     pub next_amt: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Fx {
-    Flash { a: f64, color: [u8; 3] },
-    Shake { until: f64 },
-    Glitch { until: f64 },
-    Rgb { amt: f64, dur: f64 },
-    Invert { until: f64 },
-    Tunnel { dur: f64 },
+    /// force: shown even with the flash effect off (a template's flashes)
+    Flash {
+        a: f64,
+        color: [u8; 3],
+        #[serde(default)]
+        force: bool,
+    },
+    Shake {
+        until: f64,
+    },
+    Glitch {
+        until: f64,
+    },
+    Rgb {
+        amt: f64,
+        dur: f64,
+    },
+    Invert {
+        until: f64,
+    },
+    Tunnel {
+        dur: f64,
+    },
     Strobe,
-    Text { word: String },
-    PicFlash { t1: f64, pic: usize },
-    PicOver { t1: f64, alpha: f64, pic: usize },
+    Text {
+        word: String,
+    },
+    PicFlash {
+        t1: f64,
+        pic: usize,
+    },
+    PicOver {
+        t1: f64,
+        alpha: f64,
+        pic: usize,
+    },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FxEvent {
     pub t: f64,
     pub fx: Fx,
@@ -214,22 +245,119 @@ pub struct FxEvent {
 /// (phase, the shot of each group, the shot scrolling out of each group: (shot, since, direction))
 pub type ShotsAt = (usize, Vec<Option<usize>>, Vec<Option<(usize, f64, i32)>>);
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
     pub w: i32,
     pub h: i32,
     pub duration: f64,
+    /// the chance behind every decision – also the effects' (the same plan always draws the same pictures)
+    #[serde(default)]
+    pub seed: u64,
     pub phases: Vec<Phase>,
     pub shots: Vec<Shot>,
     pub pulses: Vec<Pulse>,
     pub fx: Vec<FxEvent>,       // sorted by t
     pub rates: Vec<(f64, f64)>, // (from t, rate), sorted
-    rate_cum: Vec<f64>,         // ∫ rate up to each change
+    #[serde(skip)]
+    rate_cum: Vec<f64>, // ∫ rate up to each change
     pub stutters: Vec<f64>,
     pub cut_times: Vec<f64>,
     pub reveal: Option<(f64, f64)>, // (until: when the opening ends, end_t: its full size)
+    /// drops (time, beat length): clip audio "only on drops" fades the main clip in there for four beats
+    #[serde(default)]
+    pub drops: Vec<(f64, f64)>,
 }
 
 impl Plan {
+    /// Sorts what must be sorted and builds the lookup tables (after making or loading a plan)
+    pub fn finish(&mut self) {
+        self.fx.sort_by(|a, b| cmp_f64(a.t, b.t));
+        self.pulses.sort_by(|a, b| cmp_f64(a.t, b.t));
+        self.stutters.sort_by(|a, b| cmp_f64(*a, *b));
+        self.rates.sort_by(|a, b| cmp_f64(a.0, b.0));
+        self.rate_cum.clear();
+        let (mut acc, mut prev_t, mut prev_r) = (0.0, 0.0, 1.0);
+        for &(t, r) in &self.rates {
+            acc += (t - prev_t) * prev_r;
+            self.rate_cum.push(acc);
+            prev_t = t;
+            prev_r = r;
+        }
+    }
+
+    /// Checks a plan from a file: everything in range, so drawing it can't go wrong
+    pub fn validate(&self) -> anyhow::Result<()> {
+        use anyhow::bail;
+        if !(self.duration.is_finite() && self.duration > 0.0) {
+            bail!("the length of the show is missing");
+        }
+        if self.w < 16 || self.h < 16 || self.w > 16384 || self.h > 16384 {
+            bail!("the picture size {}×{} isn't possible", self.w, self.h);
+        }
+        if self.phases.is_empty() || self.phases[0].t > 0.0 {
+            bail!("the layouts are missing");
+        }
+        for ph in &self.phases {
+            if ph.groups == 0 || ph.slots.iter().any(|s| s.g >= ph.groups) {
+                bail!("a layout has fields without a clip");
+            }
+        }
+        for (i, sh) in self.shots.iter().enumerate() {
+            if sh.id != i
+                || sh.phase >= self.phases.len()
+                || sh.group >= self.phases[sh.phase].groups
+            {
+                bail!("shot {i} doesn't fit its layout");
+            }
+            if sh.prev.is_some_and(|p| p >= i) {
+                bail!("shot {i} refers to a later one");
+            }
+            if !(sh.t_on.is_finite() && sh.t_off >= sh.t_on && sh.until >= sh.t_off) {
+                bail!("shot {i} has broken times");
+            }
+        }
+        if self
+            .shots
+            .windows(2)
+            .any(|w| w[0].phase > w[1].phase || w[0].t_on > w[1].t_on)
+        {
+            bail!("the shots are out of order");
+        }
+        if self.rates.iter().any(|r| !(r.1.is_finite() && r.1 > 0.0)) {
+            bail!("a speed ramp is broken");
+        }
+        Ok(())
+    }
+
+    /// The same plan for another picture size (the preview draws smaller than the export)
+    pub fn resized(&self, w: i32, h: i32) -> Plan {
+        let mut p = self.clone();
+        p.w = w;
+        p.h = h;
+        for ph in p.phases.iter_mut() {
+            ph.slots = slots_for(&ph.layout, w, h, &ph.dir);
+        }
+        for sh in p.shots.iter_mut() {
+            let ph = &p.phases[sh.phase];
+            let (mut fw, mut fh) = (0, 0);
+            for s in ph.slots.iter().filter(|s| s.g == sh.group) {
+                if s.w * s.h > fw * fh {
+                    fw = s.w;
+                    fh = s.h;
+                }
+            }
+            sh.field_w = fw.max(2);
+            sh.field_h = fh.max(2);
+        }
+        p
+    }
+
+    /// The shot in group g at time t (the clip in that field then)
+    pub fn shot_in(&self, g: usize, t: f64) -> Option<usize> {
+        let (_, cur, _) = self.shots_at(t);
+        cur.get(g).copied().flatten()
+    }
+
     pub fn phase_at(&self, t: f64) -> usize {
         self.phases.partition_point(|p| p.t <= t).saturating_sub(1)
     }
@@ -312,6 +440,8 @@ pub struct Input<'a> {
     /// layout id → can it be used (per-layout clip shape: enough clips of that shape in the library)
     pub layout_ok: &'a dyn Fn(&str) -> bool,
     pub seed: u64,
+    /// PMV as template: its cuts, layouts and flashes instead of the direction's own
+    pub template: Option<&'a [TplEvent]>,
 }
 
 struct Dir<'a> {
@@ -320,6 +450,9 @@ struct Dir<'a> {
     layouts: Vec<&'static str>,
     layout: &'static str,
     dir: String,
+    cur_dir: &'static str,
+    tpl: bool,
+    drops: Vec<(f64, f64)>,
     phases: Vec<Phase>,
     shots: Vec<Shot>,
     cur: Vec<usize>, // group → current shot id
@@ -370,7 +503,7 @@ impl<'a> Dir<'a> {
     fn trig(&mut self, t: f64, fx: Fx) {
         let s = &self.inp.s.fx;
         let on = match &fx {
-            Fx::Flash { .. } => s.flash,
+            Fx::Flash { force, .. } => s.flash || *force,
             Fx::Shake { .. } => s.shake,
             Fx::Glitch { .. } => s.glitch,
             Fx::Rgb { .. } => s.rgb,
@@ -442,16 +575,23 @@ impl<'a> Dir<'a> {
     }
 
     fn set_layout(&mut self, id: &'static str, t: f64) {
+        let dir = self.dir.clone();
+        self.set_layout_dir(id, t, &dir);
+    }
+    fn set_layout_dir(&mut self, id: &'static str, t: f64, dir: &str) {
         let old = std::mem::take(&mut self.cur);
         for &o in &old {
             self.close(o, t, 0.0);
         }
         self.layout = id;
-        let slots = slots_for(id, self.inp.w, self.inp.h, &self.dir);
+        let dir = if dir == "rows" { "rows" } else { "cols" };
+        self.cur_dir = dir;
+        let slots = slots_for(id, self.inp.w, self.inp.h, dir);
         let n = layout(id).groups;
         self.phases.push(Phase {
             t,
-            layout: id,
+            layout: id.to_string(),
+            dir: dir.to_string(),
             slots,
             groups: n,
         });
@@ -670,8 +810,14 @@ impl<'a> Dir<'a> {
             bar && ki - self.layout_beat >= self.layout_hold
                 && (mood_changed || (want >= 3 && self.rng.gen::<f64>() < 0.6))
         };
+        if drop {
+            self.drops.push((t, len));
+        }
         let mut changed = false;
-        if self.layouts.len() > 1
+        if self.tpl {
+            // cuts and layouts come from the template (apply_event)
+            changed = true;
+        } else if self.layouts.len() > 1
             && ((drop && ki - self.layout_beat >= min_b) || due)
             && !self.revealing
         {
@@ -703,6 +849,7 @@ impl<'a> Dir<'a> {
                         } else {
                             [255, 255, 255]
                         },
+                        force: false,
                     },
                 );
             }
@@ -715,6 +862,7 @@ impl<'a> Dir<'a> {
                     Fx::Flash {
                         a: 0.9,
                         color: [255, 62, 138],
+                        force: false,
                     },
                 );
             }
@@ -783,6 +931,7 @@ impl<'a> Dir<'a> {
                             Fx::Flash {
                                 a: 0.15 + 0.3 * e,
                                 color: if bar { [255, 62, 138] } else { [255, 255, 255] },
+                                force: false,
                             },
                         );
                     }
@@ -791,7 +940,7 @@ impl<'a> Dir<'a> {
         }
 
         // Longest clip: a field whose clip has been on for that long is cut now, whatever the pace says
-        if max_b > 0 && !self.revealing {
+        if max_b > 0 && !self.revealing && !self.tpl {
             let n = layout(self.layout).groups;
             for gi in 0..n {
                 if ki - self.cut_k[gi] >= max_b {
@@ -887,9 +1036,74 @@ impl<'a> Dir<'a> {
         }
     }
 
+    /// A template's event (port of applyEvent)
+    fn apply_event(&mut self, ev: &TplEvent, t: f64) {
+        let e = self.energy_now;
+        match ev {
+            TplEvent::Flash {
+                strength, color, ..
+            } => {
+                self.trig(
+                    t,
+                    Fx::Flash {
+                        a: strength.max(0.35),
+                        color: *color,
+                        force: true,
+                    },
+                );
+                return;
+            }
+            TplEvent::Layout {
+                layout: id, dir, ..
+            } => {
+                let l = layout(id).id;
+                self.set_layout_dir(l, t, dir);
+                if e > 0.6 {
+                    self.trig(
+                        t,
+                        Fx::Rgb {
+                            amt: 8.0 + 14.0 * e,
+                            dur: 0.16,
+                        },
+                    );
+                }
+                if e > 0.8 {
+                    self.trig(t, Fx::Glitch { until: t + 0.14 });
+                }
+            }
+            TplEvent::Cut { groups: None, .. } => {
+                let (l, d) = (self.layout, self.cur_dir);
+                self.set_layout_dir(l, t, d);
+            }
+            TplEvent::Cut {
+                groups: Some(gs), ..
+            } => {
+                let n = layout(self.layout).groups;
+                let list: Vec<usize> = if gs.is_empty() {
+                    vec![self.next_group % n]
+                } else {
+                    gs.iter().copied().filter(|&g| g < n).collect()
+                };
+                for &g in &list {
+                    self.cut_group(g, t, 0);
+                }
+                self.next_group = list.last().copied().unwrap_or(0) + 1;
+            }
+        }
+        if e > 0.65 {
+            self.trig(
+                t,
+                Fx::Rgb {
+                    amt: 5.0 + 10.0 * e,
+                    dur: 0.12,
+                },
+            );
+        }
+    }
+
     // Queued events (half beats, pictures) whose time has come
     fn run_pending(&mut self, upto: f64, pending: &mut Vec<(f64, u8, f64)>) {
-        pending.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        pending.sort_by(|a, b| cmp_f64(a.0, b.0));
         while !pending.is_empty() && pending[0].0 <= upto {
             let (t, kind, dur) = pending.remove(0);
             match kind {
@@ -974,17 +1188,21 @@ pub fn make(inp: &Input) -> Plan {
         .map(|w| w.trim().to_string())
         .filter(|w| !w.is_empty())
         .collect();
-    let reveal = if s.reveal && inp.beats.len() > 16 && !inp.energy.is_empty() {
-        Some(make_reveal(inp.beats, inp.energy))
-    } else {
-        None
-    };
+    let reveal =
+        if s.reveal && inp.template.is_none() && inp.beats.len() > 16 && !inp.energy.is_empty() {
+            Some(make_reveal(inp.beats, inp.energy))
+        } else {
+            None
+        };
     let mut d = Dir {
         inp,
         rng: StdRng::seed_from_u64(inp.seed),
         layouts: layouts.clone(),
         layout: "full",
         dir: s.split.clone(),
+        cur_dir: "cols",
+        tpl: inp.template.is_some(),
+        drops: Vec::new(),
         phases: Vec::new(),
         shots: Vec::new(),
         cur: Vec::new(),
@@ -1017,22 +1235,60 @@ pub fn make(inp: &Input) -> Plan {
         flash_until: -1.0,
         over_until: -1.0,
     };
-    // The first layout: the reveal opens in fullscreen, else fullscreen if allowed, else the first chosen
-    let first = if reveal.is_some() || layouts.contains(&"full") {
-        "full"
+    // The first layout: a template's first, the reveal opens in fullscreen, else fullscreen if allowed, else
+    // the first chosen
+    let tpl_events: &[TplEvent] = inp.template.unwrap_or(&[]);
+    let tpl_first = tpl_events.iter().enumerate().find_map(|(i, e)| match e {
+        TplEvent::Layout { layout: l, dir, .. } => Some((i, layout(l).id, dir.clone())),
+        _ => None,
+    });
+    // (the template's first layout is the opening one – it isn't set a second time when its event comes)
+    let mut skip_ev = None;
+    if let Some((i, l, dir)) = tpl_first {
+        d.set_layout_dir(l, 0.0, &dir);
+        skip_ev = Some(i);
     } else {
-        layouts[0]
-    };
-    d.set_layout(first, 0.0);
+        let first = if reveal.is_some() || layouts.contains(&"full") {
+            "full"
+        } else {
+            layouts[0]
+        };
+        d.set_layout(first, 0.0);
+    }
     let lead = s.cut_lead.max(0.0) / 1000.0;
     let mut pending: Vec<(f64, u8, f64)> = Vec::new();
+    let mut ti = 0usize; // next template event
     for k in 0..inp.beats.len() {
         let t = (inp.beats[k] - lead).max(0.0);
         if t >= inp.duration {
             break;
         }
+        // template events before this beat (an event on the beat comes after it, like in the web version,
+        // where a frame first runs the beats, then the events)
+        while ti < tpl_events.len() && tpl_events[ti].t() < t {
+            let et = tpl_events[ti].t().clamp(0.0, inp.duration);
+            if skip_ev != Some(ti) {
+                d.run_pending(et, &mut pending);
+                d.apply_event(&tpl_events[ti], et);
+            }
+            ti += 1;
+        }
         d.run_pending(t, &mut pending);
         d.on_beat(k, t, &mut pending);
+        while ti < tpl_events.len() && tpl_events[ti].t() <= t {
+            if skip_ev != Some(ti) {
+                d.apply_event(&tpl_events[ti], t);
+            }
+            ti += 1;
+        }
+    }
+    while ti < tpl_events.len() && tpl_events[ti].t() < inp.duration {
+        let et = tpl_events[ti].t().max(0.0);
+        if skip_ev != Some(ti) {
+            d.run_pending(et, &mut pending);
+            d.apply_event(&tpl_events[ti], et);
+        }
+        ti += 1;
     }
     d.run_pending(inp.duration, &mut pending);
     let end = inp.duration;
@@ -1045,34 +1301,25 @@ pub fn make(inp: &Input) -> Plan {
             sh.until = end;
         }
     }
-    d.fx.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
-    d.pulses.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
-    d.stutters.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mut rate_cum = Vec::with_capacity(d.rates.len());
-    let mut acc = 0.0;
-    let mut prev_t = 0.0;
-    let mut prev_r = 1.0;
-    for &(t, r) in &d.rates {
-        acc += (t - prev_t) * prev_r;
-        rate_cum.push(acc);
-        prev_t = t;
-        prev_r = r;
-    }
     let reveal_out = d.reveal.map(|(_, end_t)| (d.reveal_until, end_t));
-    Plan {
+    let mut p = Plan {
         w: inp.w,
         h: inp.h,
         duration: inp.duration,
+        seed: inp.seed,
         phases: d.phases,
         shots: d.shots,
         pulses: d.pulses,
         fx: d.fx,
         rates: d.rates,
-        rate_cum,
+        rate_cum: Vec::new(),
         stutters: d.stutters,
         cut_times: d.cut_times,
         reveal: reveal_out,
-    }
+        drops: d.drops,
+    };
+    p.finish();
+    p
 }
 
 #[cfg(test)]
@@ -1101,6 +1348,7 @@ mod tests {
             n_images: 0,
             layout_ok: &ok,
             seed: 7,
+            template: None,
         });
         assert!(p.phases.len() > 3);
         assert!(p.shots.len() > 50);
@@ -1124,5 +1372,117 @@ mod tests {
         let s = &p.shots[10];
         assert!(p.shot_clock(s, s.t_on) == 0.0);
         assert!(p.rate_integral(10.0) > 0.0);
+        assert!(p.validate().is_ok());
+        assert!(!p.drops.is_empty(), "the loud parts start with drops");
+
+        // the same seed → the same plan; saved and loaded → the same clock
+        let again = make(&Input {
+            beats: &beats,
+            energy: &energy,
+            duration: 200.0,
+            bars: None,
+            s: &st,
+            w: 1280,
+            h: 720,
+            n_images: 0,
+            layout_ok: &ok,
+            seed: 7,
+            template: None,
+        });
+        assert_eq!(again.shots.len(), p.shots.len());
+        assert!(again
+            .shots
+            .iter()
+            .zip(&p.shots)
+            .all(|(a, b)| a.t_on == b.t_on && a.group == b.group));
+        let json = serde_json::to_string(&p).unwrap();
+        let mut back: Plan = serde_json::from_str(&json).unwrap();
+        back.finish();
+        assert!(back.validate().is_ok());
+        for t in [3.0, 50.5, 120.25] {
+            assert_eq!(back.rate_integral(t), p.rate_integral(t));
+        }
+
+        // smaller picture: same structure, fields scaled
+        let small = p.resized(640, 360);
+        assert_eq!(small.shots.len(), p.shots.len());
+        for (a, b) in small.phases.iter().zip(&p.phases) {
+            assert_eq!(a.layout, b.layout);
+            assert_eq!(a.slots.len(), b.slots.len());
+            assert!(a.slots.iter().all(|s| s.x + s.w <= 640 && s.y + s.h <= 360));
+        }
+    }
+
+    #[test]
+    fn template_drives_the_cuts() {
+        let beats: Vec<f64> = (0..120).map(|i| i as f64 * 0.5).collect();
+        let energy = vec![0.5; 120];
+        let st = Settings::default();
+        let ok = |_: &str| true;
+        let ev = vec![
+            TplEvent::Layout {
+                t: 0.0,
+                layout: "duo".into(),
+                dir: "rows".into(),
+            },
+            TplEvent::Cut {
+                t: 2.0,
+                groups: Some(vec![1]),
+            },
+            TplEvent::Flash {
+                t: 3.0,
+                strength: 0.2,
+                color: [255, 255, 255],
+            },
+            TplEvent::Layout {
+                t: 10.0,
+                layout: "tri".into(),
+                dir: "cols".into(),
+            },
+            TplEvent::Cut {
+                t: 12.0,
+                groups: None,
+            },
+        ];
+        let mut no_flash = st.clone();
+        no_flash.fx.flash = false;
+        let p = make(&Input {
+            beats: &beats,
+            energy: &energy,
+            duration: 60.0,
+            bars: None,
+            s: &no_flash,
+            w: 1280,
+            h: 720,
+            n_images: 0,
+            layout_ok: &ok,
+            seed: 1,
+            template: Some(&ev),
+        });
+        assert!(p.validate().is_ok());
+        // only the template's layouts, in its directions
+        let lays: Vec<(&str, &str)> = p
+            .phases
+            .iter()
+            .map(|ph| (ph.layout.as_str(), ph.dir.as_str()))
+            .collect();
+        assert_eq!(
+            lays,
+            vec![("duo", "rows"), ("tri", "cols"), ("tri", "cols")]
+        );
+        // the cut at 2 s changes field 1 only; no other cuts in between
+        let in_first: Vec<&Shot> = p.shots.iter().filter(|s| s.phase == 0).collect();
+        assert_eq!(in_first.len(), 3);
+        assert_eq!(in_first[2].group, 1);
+        assert_eq!(in_first[2].t_on, 2.0);
+        // the template's flash comes even with the flash effect off
+        assert!(p
+            .fx
+            .iter()
+            .any(|e| matches!(e.fx, Fx::Flash { force: true, .. }) && e.t == 3.0));
+        assert!(!p
+            .fx
+            .iter()
+            .any(|e| matches!(e.fx, Fx::Flash { force: false, .. })));
     }
 }

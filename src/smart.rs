@@ -12,11 +12,13 @@ pub fn tiny(w: u32, h: u32) -> (u32, u32) {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sig {
     pub focus: (f64, f64),
     pub skin: f64,
     pub contrast: f64,
+    /// the tiny picture's gray values (motion between frames) – not saved: only needed while preparing
+    #[serde(skip)]
     pub gray: Vec<f32>,
     pub hist: [f64; 16],
     pub color: (f64, f64, f64),
