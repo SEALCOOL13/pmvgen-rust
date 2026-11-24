@@ -1,0 +1,42 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/confident-carson-vxwibu
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Collect files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\pmvgen.exe dist\
+          Copy-Item README.md dist\
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          Compress-Archive -Path dist\* -DestinationPath "pmvgen-windows-x64-$sha.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmvgen-windows-x64
+          path: pmvgen-windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 30
