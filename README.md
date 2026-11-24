@@ -9,18 +9,25 @@ and edit a generated PMV, project files that render the same video again, and fa
 Everything runs locally. Nothing is uploaded.
 
 ## To-Dos
-- Skip start/end of video(s) not working
-- Seek bar is off-screen when changing clip location
-- Better engine to determine cuts that compliment musicality of song(s) selected using deeper audio analysis
-- Clips re-appear
-- Allow editing aspects of "detected" PMV structure
-- Allow merging clip(s)/cut(s) and changing length of a clip irrespective of determined beat/cut place
-- NSFW visual engine to "see" and "set" what the content of each clip is
-- Slow motion and frame-gen whenever needed.
-- Color/Image Filters (B&W, posterize etc.)
-- Ability to export as Premiere Pro, Davinci Resolve or other popular video editor project files
-- Export with three audio tracks (music only, clip audio only, both)
-- UI, feature-set, implementation expansions and improvements for better results
+- [ ] Skip start/end of video(s) not working
+- [ ] Seek bar is off-screen when changing clip location
+- [ ] Be able to preview what change you are making when adjusting clip timestamp, live
+- [ ] Timeline should show clip frames, not just boxes
+- [ ] Better engine to determine cuts that compliment musicality of song(s) selected using deeper audio analysis
+- [ ] Clips re-appear, strange repetitive clip picking behaviour
+- [ ] Allow editing aspects of "detected" PMV structure
+- [ ] Allow merging clip(s)/cut(s) and changing length of a clip irrespective of determined beat/cut place
+- [ ] NSFW visual engine to "see" and "set" what the content of each clip is
+- [ ] Per-audio mute option
+- [ ] Slow motion and frame-gen whenever needed.
+- [ ] Color/Image Filters (B&W, posterize etc.)
+- [ ] Ability to export as Premiere Pro, Davinci Resolve or other popular video editor project files
+- [ ] Export with three audio tracks (music only, clip audio only, both)
+- [ ] Allow source files to be moved/renamed and still work (ask to choose if unclear)
+- [ ] Set working directories for each component of the app
+- [ ] Set folders for "types (acts)" of pre-categorized content that can then be segmented into the PMV
+- [ ] Horizontal Tabbed Layout instead of vertical
+- [ ] UI, feature-set, implementation expansions and improvements for better results
 
 ## Run it
 
